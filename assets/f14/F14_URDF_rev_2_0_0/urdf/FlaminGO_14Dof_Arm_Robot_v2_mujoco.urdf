@@ -1,0 +1,1101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="FlaminGO_14Dof_Arm_Robot_v2">
+  
+  
+  <!-- stkim : Mujoco simulation error in inertia fix -->
+  <mujoco>
+    <compiler
+      inertiafromgeom="true"
+      balanceinertia="true"
+      discardvisual="false" />
+  </mujoco>
+  
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.0314 0.00010216 0.20197"
+        rpy="0 0 0" />
+      <mass
+        value="15.77639769" />
+      <inertia
+        ixx="0.12149"
+        ixy="1.0486E-05"
+        ixz="-0.0038991"
+        iyy="0.14861"
+        iyz="-5.8669E-06"
+        izz="0.11055" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="left_dof1_link">
+    <inertial>
+      <origin
+        xyz="0.0018034 -0.00023075 0.05636"
+        rpy="0 0 0" />
+      <mass
+        value="0.99503714" />
+      <inertia
+        ixx="0.0018729"
+        ixy="-1.3854E-06"
+        ixz="0.00024251"
+        iyy="0.0017275"
+        iyz="1.2126E-05"
+        izz="0.00079498" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof1_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof1_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof1_joint"
+    type="revolute">
+    <origin
+      xyz="0.062882 0.0625 0.7425"
+      rpy="1.5708 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="left_dof1_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.40339204"
+      upper="1.48352986"
+      effort="120"
+      velocity="20" />
+  </joint>
+  <link
+    name="left_dof2_link">
+    <inertial>
+      <origin
+        xyz="0.000293984969500061 -0.0560404218442924 -0.0227986534788321"
+        rpy="0 0 0" />
+      <mass
+        value="3.32873170" />
+      <inertia
+        ixx="0.00391691125224609"
+        ixy="-1.93863966888297E-05"
+        ixz="-1.44337889684472E-06"
+        iyy="0.00237276162335052"
+        iyz="-9.48862281967361E-05"
+        izz="0.00525386280947664" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof2_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof2_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof2_joint"
+    type="revolute">
+    <origin
+      xyz="-0.022913 0 0.104"
+      rpy="0 -1.5708 0" />
+    <parent
+      link="left_dof1_link" />
+    <child
+      link="left_dof2_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.29670597"
+      upper="2.96705973"
+      effort="120"
+      velocity="20" />
+  </joint>
+  <link
+    name="left_dof3_link">
+    <inertial>
+      <origin
+        xyz="0.00850474829730263 0.00023068100940804 0.0673490704378507"
+        rpy="0 0 0" />
+      <mass
+        value="1.48355801" />
+      <inertia
+        ixx="0.00149031981538492"
+        ixy="-3.52498357258188E-06"
+        ixz="5.56025710226022E-05"
+        iyy="0.0010370335026427"
+        iyz="1.27627773521193E-05"
+        izz="0.000759342890579691" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof3_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof3_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof3_joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.145 -0.0255"
+      rpy="1.5708 0 0" />
+    <parent
+      link="left_dof2_link" />
+    <child
+      link="left_dof3_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.52247738"
+      upper="2.52247738"
+      effort="60"
+      velocity="20" />
+  </joint>
+  <link
+    name="left_dof4_link">
+    <inertial>
+      <origin
+        xyz="0.0741833226086134 -0.00234025018874345 -0.0255245404273439"
+        rpy="0 0 0" />
+      <mass
+        value="0.710853" />
+      <inertia
+        ixx="0.000254690038523205"
+        ixy="1.06541348716813E-05"
+        ixz="7.72159243161279E-05"
+        iyy="0.000776543470016932"
+        iyz="2.20546481102254E-06"
+        izz="0.000816533700094128" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof4_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof4_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof4_joint"
+    type="revolute">
+    <origin
+      xyz="-0.023 0 0.088"
+      rpy="0 -1.5708 0" />
+    <parent
+      link="left_dof3_link" />
+    <child
+      link="left_dof4_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.79768913"
+      upper="0.20943951"
+      effort="60"
+      velocity="20" />
+  </joint>
+  <link
+    name="left_dof5_link">
+    <inertial>
+      <origin
+        xyz="0.00271211315775366 0.000984649090636336 0.0633789041394574"
+        rpy="0 0 0" />
+      <mass
+        value="1.08161709" />
+      <inertia
+        ixx="0.000876114406385597"
+        ixy="2.28774668170969E-06"
+        ixz="-2.40715393809393E-05"
+        iyy="0.00065765916287975"
+        iyz="-1.62856272385307E-06"
+        izz="0.000339766392239549" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof5_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof5_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof5_joint"
+    type="revolute">
+    <origin
+      xyz="0.132 0 -0.0305"
+      rpy="0 1.5708 0" />
+    <parent
+      link="left_dof4_link" />
+    <child
+      link="left_dof5_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.6981317"
+      upper="3.83972435"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="left_dof6_link">
+    <inertial>
+      <origin
+        xyz="-0.00208973521192579 0.000317894852707251 0.00338653026986208"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="3.99189871184107E-05"
+        ixy="9.76609990415116E-08"
+        ixz="-5.95468093734539E-09"
+        iyy="2.22720675278235E-05"
+        iyz="-3.70984476068055E-08"
+        izz="2.28022853138171E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof6_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof6_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof6_joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0.13"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="left_dof5_link" />
+    <child
+      link="left_dof6_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.87266463"
+      upper="0.87266463"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="left_dof7_link">
+    <inertial>
+      <origin
+        xyz="0.0796370534703705 -0.0884176259389205 -0.0210235823578986"
+        rpy="0 0 0" />
+      <mass
+        value="0.64136941" />
+      <inertia
+        ixx="0.000456156559421494"
+        ixy="5.24698424183171E-05"
+        ixz="2.73306968895615E-07"
+        iyy="0.000505159163441666"
+        iyz="-2.17752211054469E-05"
+        izz="0.000307102723878905" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof7_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_dof7_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_dof7_joint"
+    type="revolute">
+    <origin
+      xyz="-0.0225 0 0"
+      rpy="0 -1.5708 0" />
+    <parent
+      link="left_dof6_link" />
+    <child
+      link="left_dof7_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-1.57079633"
+      upper="1.57079633"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="left_l_gripper_link">
+    <inertial>
+      <origin
+        xyz="0.00114746656276299 -0.0285238901414322 -0.000256320176595937"
+        rpy="0 0 0" />
+      <mass
+        value="0.102275" />
+      <inertia
+        ixx="4.35090963529451E-05"
+        ixy="-1.16021755955116E-07"
+        ixz="-7.0344427233332E-12"
+        iyy="2.210441057474E-05"
+        iyz="3.54056616973699E-06"
+        izz="5.80645799062485E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_l_gripper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_l_gripper_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_l_gripper_joint"
+    type="prismatic">
+    <origin
+      xyz="0 -0.1275 -0.07855"
+      rpy="0 0 0" />
+    <parent
+      link="left_dof7_link" />
+    <child
+      link="left_l_gripper_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.042489517"
+      upper="0"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="left_r_gripper_link">
+    <inertial>
+      <origin
+        xyz="-0.00114746911093999 -0.0285238834897661 0.000256319194180232"
+        rpy="0 0 0" />
+      <mass
+        value="0.102275" />
+      <inertia
+        ixx="4.35091164887871E-05"
+        ixy="1.1603384193734E-07"
+        ixz="-1.00479824938793E-11"
+        iyy="2.21044197794562E-05"
+        iyz="-3.54056165629327E-06"
+        izz="5.80646069695255E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_r_gripper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/left_r_gripper_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_r_gripper_joint"
+    type="prismatic">
+    <origin
+      xyz="0 -0.1275 0.03355"
+      rpy="0 0 0" />
+    <parent
+      link="left_dof7_link" />
+    <child
+      link="left_r_gripper_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.042489517"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="right_dof1_link">
+    <inertial>
+      <origin
+        xyz="-0.00180337567445404 0.000230750255536594 0.0563595146148284"
+        rpy="0 0 0" />
+      <mass
+        value="0.99503714" />
+      <inertia
+        ixx="0.00187290385551659"
+        ixy="-1.38537565179349E-06"
+        ixz="-0.000242514675460222"
+        iyy="0.00172748049076857"
+        iyz="-1.21264283247333E-05"
+        izz="0.00079497587811651" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof1_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof1_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof1_joint"
+    type="revolute">
+    <origin
+      xyz="0.062882 -0.0625 0.7425"
+      rpy="1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="right_dof1_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.40339204"
+      upper="1.48352986"
+      effort="120"
+      velocity="20" />
+  </joint>
+  <link
+    name="right_dof2_link">
+    <inertial>
+      <origin
+        xyz="0.000293962032619111 -0.0561164052070849 -0.0227965750160223"
+        rpy="0 0 0" />
+      <mass
+        value="3.32873170" />
+      <inertia
+        ixx="0.00390258508950593"
+        ixy="-1.8100204143379E-05"
+        ixz="-1.44622637574376E-06"
+        iyy="0.00237340268150122"
+        iyz="-9.43235494080011E-05"
+        izz="0.00524018047774657" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof2_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof2_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof2_joint"
+    type="revolute">
+    <origin
+      xyz="0.022913 0 0.104"
+      rpy="0 1.5708 0" />
+    <parent
+      link="right_dof1_link" />
+    <child
+      link="right_dof2_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.96705973"
+      upper="0.29670597"
+      effort="120"
+      velocity="20" />
+  </joint>
+  <link
+    name="right_dof3_link">
+    <inertial>
+      <origin
+        xyz="-0.00850329175976527 0.000225538807170689 0.0673485562763992"
+        rpy="0 0 0" />
+      <mass
+        value="1.48355801" />
+      <inertia
+        ixx="0.00149029218384569"
+        ixy="3.32749349967503E-06"
+        ixz="-5.56010410666643E-05"
+        iyy="0.00103702705552869"
+        iyz="1.26101150015172E-05"
+        izz="0.000759320958351287" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof3_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof3_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof3_joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.145 -0.0255"
+      rpy="1.5708 0 0" />
+    <parent
+      link="right_dof2_link" />
+    <child
+      link="right_dof3_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-2.52247738"
+      upper="2.52247738"
+      effort="60"
+      velocity="20" />
+  </joint>
+  <link
+    name="right_dof4_link">
+    <inertial>
+      <origin
+        xyz="-0.0741842637486476 -0.00225926260746645 -0.0255065162394671"
+        rpy="0 0 0" />
+      <mass
+        value="0.710853" />
+      <inertia
+        ixx="0.000254856187532119"
+        ixy="-8.49084666312349E-06"
+        ixz="-7.81817572056926E-05"
+        iyy="0.000775919993245693"
+        iyz="3.27733484623813E-06"
+        izz="0.000815655897862583" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof4_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof4_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof4_joint"
+    type="revolute">
+    <origin
+      xyz="0.023 0 0.088"
+      rpy="0 1.5708 0" />
+    <parent
+      link="right_dof3_link" />
+    <child
+      link="right_dof4_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-0.20943951"
+      upper="1.79768913"
+      effort="60"
+      velocity="20" />
+  </joint>
+  <link
+    name="right_dof5_link">
+    <inertial>
+      <origin
+        xyz="-0.00276848002602792 0.000984518914089516 0.0633778477295858"
+        rpy="0 0 0" />
+      <mass
+        value="1.08161709" />
+      <inertia
+        ixx="0.00087612567763503"
+        ixy="-2.24227385353076E-06"
+        ixz="2.30923969279845E-05"
+        iyy="0.000657671527411313"
+        iyz="-1.626116744763E-06"
+        izz="0.000339768976445399" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof5_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof5_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof5_joint"
+    type="revolute">
+    <origin
+      xyz="-0.132 0 -0.0305"
+      rpy="0 -1.5708 0" />
+    <parent
+      link="right_dof4_link" />
+    <child
+      link="right_dof5_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.83972435"
+      upper="0.6981317"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="right_dof6_link">
+    <inertial>
+      <origin
+        xyz="0.00208973521195255 0.000615000509680511 0.00334367297622185"
+        rpy="0 0 0" />
+      <mass
+        value="0" />
+      <inertia
+        ixx="3.99189871184086E-05"
+        ixy="8.90183420846902E-08"
+        ixz="6.35135976310167E-09"
+        iyy="2.22720675278216E-05"
+        iyz="3.70984476052978E-08"
+        izz="2.28022853138173E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof6_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof6_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof6_joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0.13"
+      rpy="-1.5708 0 0" />
+    <parent
+      link="right_dof5_link" />
+    <child
+      link="right_dof6_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.87266463"
+      upper="0.87266463"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="right_dof7_link">
+    <inertial>
+      <origin
+        xyz="-0.0796323865505391 -0.0884176259387773 -0.0211434379880439"
+        rpy="0 0 0" />
+      <mass
+        value="0.64136941" />
+      <inertia
+        ixx="0.000456156559421392"
+        ixy="-5.27550999820446E-05"
+        ixz="2.73306968806619E-07"
+        iyy="0.000505159163441524"
+        iyz="-2.10573496783392E-05"
+        izz="0.000307102723878816" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof7_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_dof7_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_dof7_joint"
+    type="revolute">
+    <origin
+      xyz="0.0225 0 0"
+      rpy="0 1.5708 0" />
+    <parent
+      link="right_dof6_link" />
+    <child
+      link="right_dof7_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.57079633"
+      upper="1.57079633"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="right_l_gripper_link">
+    <inertial>
+      <origin
+        xyz="-0.00114746655653436 -0.0285238901517815 0.00025632017995636"
+        rpy="0 0 0" />
+      <mass
+        value="0.102275" />
+      <inertia
+        ixx="4.35090862244178E-05"
+        ixy="1.16015615499737E-07"
+        ixz="-5.53084723364246E-12"
+        iyy="2.21044059141262E-05"
+        iyz="-3.54056843069291E-06"
+        izz="5.80645662186957E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_l_gripper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_l_gripper_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_l_gripper_joint"
+    type="prismatic">
+    <origin
+      xyz="0 -0.1275 0.03355"
+      rpy="0 0 0" />
+    <parent
+      link="right_dof7_link" />
+    <child
+      link="right_l_gripper_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.042489517"
+      upper="0"
+      effort="14"
+      velocity="32" />
+  </joint>
+  <link
+    name="right_r_gripper_link">
+    <inertial>
+      <origin
+        xyz="0.00114747231445067 -0.0285238748284087 -0.000256317985983134"
+        rpy="0 0 0" />
+      <mass
+        value="0.102275" />
+      <inertia
+        ixx="4.35090963502791E-05"
+        ixy="-1.16021755122089E-07"
+        ixz="-7.03041894998718E-12"
+        iyy="2.21044105666606E-05"
+        iyz="3.54056617032949E-06"
+        izz="5.80645799002637E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_r_gripper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="../meshes_mujoco/right_r_gripper_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_r_gripper_joint"
+    type="prismatic">
+    <origin
+      xyz="0 -0.1275 -0.07855"
+      rpy="0 0 0" />
+    <parent
+      link="right_dof7_link" />
+    <child
+      link="right_r_gripper_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.042489517"
+      effort="14"
+      velocity="32" />
+  </joint>
+</robot>
