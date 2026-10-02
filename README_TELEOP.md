@@ -1,0 +1,260 @@
+# F14 / FlaminGO — Quest 3 × Isaac Sim teleoperation
+
+두 개의 터미널에서 실행하는 6DoF 양팔 teleoperation입니다. 왼팔 7 + 오른팔 7 + 좌우 gripper 2의 **16D semantic action**과 실제 VLA RGB 카메라 3개를 사용합니다. HOME, 검증된 URDF, canonical USD를 그대로 사용합니다.
+
+## 실행
+
+Terminal 1 — Isaac:
+
+```bash
+conda activate env_isaaclab
+cd ~/IsaacLab_2_3_2/IsaacLab
+./isaaclab.sh -p ~/stkim_ws/quest_robot_isaac/scripts/run_isaac_teleop.py --device cuda:0
+```
+
+GUI가 필요 없으면 `--headless`를 추가합니다. 카메라 렌더링은 launcher가 `enable_cameras=True`로 자동 활성화합니다.
+
+Terminal 2 — Quest / IK:
+
+```bash
+conda activate env_isaaclab
+cd ~/stkim_ws/quest_robot_isaac
+python scripts/run_quest_teleop.py --host-ip <COMPANY_PC_IP>
+```
+
+IP를 생략하면 현재 라우팅 정보를 통해 탐색합니다. 여러 NIC가 있으면 `ip -4 addr`로 Quest와 같은 LAN의 주소를 확인하고 명시하세요. 서버는 `0.0.0.0:8012`에 bind하며 실행 시 아래 URL을 출력합니다.
+
+```text
+https://<COMPANY_PC_IP>:8012/?ws=wss://<COMPANY_PC_IP>:8012&grid=False
+```
+
+설치된 Vuer 0.0.60은 `/`에서 client와 WebSocket을 함께 제공합니다. 로컬 client 대신 호스팅 client를 사용하는 대체 주소도 출력합니다.
+
+```text
+https://vuer.ai?ws=wss://<COMPANY_PC_IP>:8012&grid=False
+```
+
+Quest Browser에서 주소를 열고 인증서 신뢰를 처리한 뒤 VR/XR 세션에 들어가세요. **controller mode**입니다. 초기 2초 안정화 후 서로 다른 이벤트에서 45개 pose sample을 모읍니다. 머리와 양손을 가만히 유지하고 trigger를 놓으세요. 움직임이 크면 평균을 버리고 다시 수집합니다.
+
+두 프로세스의 실행 순서는 자유입니다. 둘 다 준비되기 전에는 arm HOME / gripper open을 유지합니다. Quest terminal에서 **`R` + Enter**를 입력하면 현재 유지 중인 로봇 목표를 기준으로 재보정합니다. 재접속과 프로세스 재시작도 자동 재보정합니다. 양쪽 모두 Ctrl+C로 종료합니다.
+
+## 확인한 환경과 의존성
+
+| 항목 | 로컬에서 확인한 값 |
+|---|---|
+| Isaac Sim | 5.1.0.0 |
+| Isaac Lab checkout | `git describe`: v2.3.2, `VERSION`: 2.3.2 |
+| Python | env_isaaclab / 3.11 |
+| TeleVuer | `~/stkim_ws/xr_teleoperate/teleop/televuer` editable source |
+| vuer / params-proto | 0.0.60 / 2.13.2 |
+| Pinocchio (`pin`) | 2.7.0 |
+| NumPy / OpenCV | 1.26.4 / 4.11.0 |
+| pyzmq | 26.2.1 — 누락되어 이 패키지만 `--no-deps`로 추가 |
+
+기존 environment를 upgrade하지 않습니다. 새로 복제한 환경에서 ZMQ만 빠졌다면:
+
+```bash
+python -m pip install --no-deps pyzmq==26.2.1
+```
+
+`requirements-teleop.txt`는 관련 버전을 기록합니다. 기존 env에 일괄 upgrade하는 용도가 아닙니다. CameraCfg/Articulation 코드는 **실제 설치된 v2.3.2 source**를 확인했습니다. [해당 버전 Camera API 문서](https://isaac-sim.github.io/IsaacLab/v2.3.2/source/api/lab/isaaclab.sensors.html#isaaclab.sensors.CameraCfg)도 참고할 수 있습니다.
+
+## 프로세스 / 파일 구조
+
+```text
+Quest Browser controllers --HTTPS/WSS :8012--> Quest process
+    TeleVuer wrapper → calibration → relative SE(3) → Pinocchio IK
+                                      │
+                              UDP 127.0.0.1:5005 (16D)
+                                      ↓
+                                  Isaac process
+                          F14 articulation + 3 RGB cameras
+                                      │
+                raw RGB ──────────────┼── future dataset callback
+                                      ↓
+                           operator-only RGB composite
+                           JPEG worker, latest-frame PUB
+                                      │
+                             ZMQ 127.0.0.1:5556
+                                      ↓
+                         Quest SUB → BGR → render_to_xr
+```
+
+TeleVuer는 내부적으로 WebSocket child process와 shared-memory image writer를 사용합니다. Isaac와 Vuer를 같은 Python process에서 실행했을 때 연결이 실패했던 기존 실험을 반영해 두 runtime의 import와 launch를 분리했습니다. Isaac 프로세스에는 TeleVuer/Vuer/Pinocchio import가 없습니다. Quest 프로세스에는 Isaac import가 없습니다. **Vuer가 fork한 다음** ZMQ를 시작하므로 이미 실행 중인 ZMQ thread를 fork하지도 않습니다.
+
+| 파일 | 역할 |
+|---|---|
+| `config/teleop_config.py` | rate, filter, timeout, camera offset/gain |
+| `robot/f14_config.py` | HOME, joint 이름, 원본 asset 경로 |
+| `robot/f14_ik.py` | 기존 LOCAL DLS 알고리즘, arm-only Jacobian |
+| `robot/f14_ik_legacy.py` | 수정 전 solver 백업 |
+| `robot/gripper.py` | trigger 정규화, scalar↔finger mapping |
+| `teleop/quest_teleop_server.py` | Quest main loop와 calibration UX |
+| `teleop/televuer_adapter.py` | 실제 설치 API, timestamp watchdog, SSL/URL |
+| `teleop/xr_pose.py` | SE(3) calibration, 1:1 mapping, SO(3) filter |
+| `teleop/action_protocol.py` | 공통 16D UDP packing/validation, 상태 조회 |
+| `teleop/xr_video.py` | JPEG/ZMQ worker와 XR BGR adapter |
+| `simulation/f14_scene.py` | USD spawn, name lookup, HOME, measured state |
+| `simulation/cameras.py` | 실제 센서 3개, raw observation, snapshot |
+| `simulation/quest_view_compositor.py` | BODY 중앙 크게, 좌우 WRIST 작게 |
+| `simulation/isaac_teleop_app.py` | physics/camera loop, recorder callback |
+| `scripts/run_*_teleop.py` | 두 runtime의 실행 진입점 |
+| `scripts/test_*.py`, `tests/` | 독립 진단과 regression tests |
+
+기존 `teleop/quest_ik_sender.py`의 사용자 수정, `scripts/isaac_joint_receiver.py`, `scripts/teleop_quest_isaac.py`, `scripts/test_f14.py`는 그대로 보존했습니다. **새 시스템은 `run_*_teleop.py`로 실행**하세요. 기존 sender/receiver에는 14D packet과 magic 불일치가 있으므로 새 실행 경로와 섞지 않습니다. 기존 단일 프로세스 스크립트도 reference용으로만 남겼습니다. MuJoCo 프로젝트와 원본 USD/URDF는 수정하지 않았습니다.
+
+## 16D action과 수신 안전 동작
+
+```python
+action_16 = [*left_arm_q_7, *right_arm_q_7, left_closure, right_closure]
+# 0:7 left radians / 7:14 right radians / 14:16 [0=open, 1=closed]
+```
+
+UDP `!4sId16f`, 정확히 **80 bytes**: `F16A`, uint32 sequence, float64 timestamp, float32 16개. timestamp는 동일 Linux host의 `time.monotonic()` 초입니다. Wall-clock 조정 영향을 받지 않으며, **다른 PC로 action UDP를 옮길 때는 clock/schema 재설계가 필요**합니다. 외부 LAN에 action/video 포트를 열지 않습니다.
+
+receiver는 길이, magic, finite 값, gripper 범위, USD arm limits, 시간 순서와 0.5초 freshness를 검사합니다. 잘못된 packet은 watchdog을 갱신하지 않습니다. 수신 queue를 비워 가장 최신 유효 packet만 적용합니다. sequence가 0으로 돌아가는 sender 재시작도 monotonic timestamp로 처리합니다.
+
+- `WAITING`: 아직 유효 명령 없음 → HOME / open.
+- `ACTIVE`: 유효한 최근 명령 → position drive target.
+- `HOLD`: 마지막 명령이 0.5초보다 오래됨 → **마지막 유효 target 유지**.
+
+읽기 전용 `F16?` 요청에 수신기가 `F16S + boot monotonic time + held action`을 돌려줍니다. 이 작은 handshake는 dataset action과 별개입니다. 송신기 재시작은 held target에서 재보정하고, 시뮬레이터 재시작은 새로운 boot를 감지해 HOME에서 다시 보정합니다. tracking 상실·receiver 응답 상실·보정 중에는 action 송신을 중단합니다.
+
+## Pose / IK
+
+설치된 wrapper는 이미 OpenXR → robot basis를 변환합니다. `+X=forward, +Y=left, +Z=up`. 기본 `arm_reference_mode="head_yaw"`는 head 위치와 yaw에 상대적인 pose를 반환합니다. 이를 그대로 유지했으므로 acceptance test 때 머리는 고정하세요. 머리를 움직이면 wrapper 좌표도 변합니다.
+
+```python
+p_target = p_robot_anchor + (p_controller_now - p_controller_neutral)
+R_rel = R_controller_neutral.T @ R_controller_now
+R_target = R_robot_anchor @ B @ R_rel @ B.T
+```
+
+초기 anchor=HOME FK, 재보정 anchor=마지막 유효 robot target의 FK. `B=CONTROLLER_TO_EE_ROT`, 기본 identity. 위치·회전 gain은 1입니다. 위치 5mm neutral deadband 외에 최대 이동량·회전각 clamp가 없습니다. deadband 밖의 값은 threshold를 빼지 않고 그대로 사용합니다. SO(3) filtering은 `R_f @ exp3(alpha * log3(R_f.T @ R_new))`입니다. `--no-filter`는 위치·회전·gripper low-pass를 끄며 neutral deadband는 유지합니다.
+
+IK는 검증된 `_mujoco.urdf`와 `left_dof7_link`, `right_dof7_link`, LOCAL Jacobian DLS를 사용합니다. 4개 finger column을 명시적으로 제외했습니다. 30 iteration, `eps=2e-4`, `dt=.3`, damping `1e-4`. **수렴 실패 시 partial q를 사용하지 않고 마지막 유효 양팔 q를 유지**합니다. trigger는 독립적으로 계속 사용할 수 있습니다. 경계 밖 target도 축소하지 않으므로 로그의 desired translation은 1:1입니다.
+
+## Gripper
+
+설치된 wrapper trigger는 `10=released, 0=fully pressed`. source를 한 번 검사하여 encoding을 선택하고 `closure=1-raw/10`으로 변환합니다. 값이 1.5보다 작은 순간 encoding을 바꾸는 방식은 사용하지 않습니다. 완전히 누른 legacy 값 0과 standard released 값 0을 구별할 수 없기 때문입니다. `--trigger-encoding standard|legacy-inverted-10`으로 다른 wrapper를 명시할 수도 있습니다. squeeze는 기본 0→1입니다.
+
+```python
+opening = 0.0425 * (1 - closure)
+finger_targets = [-opening_left, +opening_left,
+                 -opening_right, +opening_right]
+```
+
+실제 USD limit은 0.042489517m이므로 finger endpoint에만 약 10μm 차이를 반영합니다. 실제 GPU 검사에서 원본 finger drive 강성 2.3~2.8 N/m은 중력을 버티지 못했습니다. **런타임 finger actuator에만** stiffness=2000 N/m, damping=30 N·s/m를 설정했습니다. USD effort limit 14N과 모든 arm drive gain은 유지합니다. 이는 위치 mapping gain 변경과 무관합니다.
+
+## 카메라와 dataset interface
+
+`CameraCfg.OffsetCfg(convention="world")`의 camera 축은 forward=+X, up=+Z입니다. 아래 offset은 **parent link 좌표**, quaternion은 **wxyz**입니다.
+
+| observation 이름 | parent | 해상도 | offset (m) | rotation wxyz |
+|---|---|---|---|---|
+| front / BODY | base_link | 640×480 | (.08, 0, .85) | (.965926, 0, .258819, 0) |
+| left_wrist | left_dof7_link | 320×240 | (.055, -.03, 0) | (.379928, -.379928, .596368, -.596368) |
+| right_wrist | right_dof7_link | 320×240 | (-.055, -.03, 0) | (.596368, .596368, -.379928, -.379928) |
+
+Body는 전방 아래 30도, wrist는 link의 -Y 집기 방향을 기준으로 camera 아래 25도입니다. 좌우 link가 mirror이므로 영상의 위쪽 방향도 각각 local +X/-X로 맞췄습니다. offset은 config에서 조정합니다. 실제 rigid link를 이름으로 찾아 그 아래 camera prim을 생성하므로 import directory나 joint numeric ordering에 의존하지 않습니다.
+
+세 센서의 `camera.data.output["rgb"]`를 그대로 유지합니다. raw는 `(1,H,W,3)` uint8 tensor이며 robot state는 `(1,16)`입니다. operator 변환 때만 batch index를 선택하고 CPU로 복사합니다. dataset callback은 아래 구조를 받습니다.
+
+```python
+{
+    "observation.state": measured_state_16,
+    "observation.images.front": body_rgb,
+    "observation.images.left_wrist": left_wrist_rgb,
+    "observation.images.right_wrist": right_wrist_rgb,
+}
+# run(..., observation_callback=callback)
+# callback(observation, commanded_action_16, simulation_time_seconds)
+```
+
+callback이 다음 frame 이후에도 데이터를 보관하려면 tensor를 clone해야 합니다. 센서 버퍼는 재사용됩니다. 현재 gripper state는 command가 아니라 실제 두 finger 위치로부터 평균 opening을 계산합니다. callback에서는 오래 걸리는 I/O를 하지 마세요. training/LeRobot 저장 pipeline은 이번 범위에 포함하지 않습니다.
+
+Display composite는 1280×720, BODY가 가용 폭의 64%, 좌우 각각 18%, aspect-ratio 유지입니다. resize와 label은 새 canvas에만 적용합니다. JPEG quality=80, PUB/SUB 단일 메시지, CONFLATE, pending frame 1개, nonblocking send를 사용합니다. JPEG encoder는 Isaac main loop 밖 thread에서 실행하며 socket도 해당 thread가 소유합니다. SUB는 최신 frame 하나만 decode합니다. 영상이 1초 이상 stale이면 Quest에 안내 이미지를 표시하고 자동 재연결을 기다립니다. `render_to_xr`가 **BGR을 입력받아 내부에서 RGB로 변환**하는 설치 버전의 동작을 adapter에 명시했습니다.
+
+기본 physics/control/camera는 60/30/30Hz입니다. rendering과 GPU→CPU 복사는 camera 주기에만 합니다. 처리시간이 길어지면 실제 Hz는 낮아지며 오래된 frame을 따라잡기 위해 재생하지 않습니다. 이 PC의 측정값은 검증 결과 문서를 참고하세요.
+
+## SSL / LAN
+
+탐색 순서는 기존 TeleVuer와 같습니다: `XR_TELEOP_CERT` + `XR_TELEOP_KEY` → `~/.config/xr_teleoperate/{cert,key}.pem` → TeleVuer package root. startup에서 경로를 검사합니다. 비밀 key 내용은 출력하지 않습니다.
+
+**현재 발견한 기존 인증서에는 Subject Alternative Name이 없습니다.** 로컬 WSS 테스트는 이 self-signed 인증서를 사용했지만, Quest Browser에서 현재 LAN IP의 신뢰 여부는 별도 확인이 필요합니다. 기존 인증서를 보존하려면 새 IP용 파일명을 사용하세요.
+
+```bash
+HOST_IP=<COMPANY_PC_IP>
+mkdir -p ~/.config/xr_teleoperate
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout ~/.config/xr_teleoperate/company-key.pem \
+  -out ~/.config/xr_teleoperate/company-cert.pem \
+  -subj "/CN=${HOST_IP}" \
+  -addext "subjectAltName=IP:${HOST_IP}"
+chmod 600 ~/.config/xr_teleoperate/company-key.pem
+export XR_TELEOP_CERT=~/.config/xr_teleoperate/company-cert.pem
+export XR_TELEOP_KEY=~/.config/xr_teleoperate/company-key.pem
+```
+
+회사에서 신뢰하는 CA 발급 인증서를 사용할 수 있다면 그것을 우선 사용하세요. self-signed SAN을 넣는 것만으로 Quest가 자동 신뢰하지는 않습니다. Quest에서 HTTPS 페이지를 먼저 열어 인증서 신뢰를 처리하고 XR 진입을 확인하세요. 필요시 Linux 방화벽:
+
+```bash
+sudo ufw allow 8012/tcp
+```
+
+Quest와 PC가 같은 LAN이어도 Wi-Fi AP client isolation이나 회사 정책이 단말 간 통신을 차단할 수 있습니다. 별도 터널/Windows forwarding은 필요하지 않습니다.
+
+## 진단 / acceptance tests
+
+작업 directory는 `~/stkim_ws/quest_robot_isaac`, Python은 `env_isaaclab`입니다. 같은 8012/5005/5556을 쓰는 live 프로세스와 진단 프로세스를 동시에 띄우지 마세요.
+
+```bash
+# 순수 수학 + IK + 실제 UDP/ZMQ 회귀 테스트
+python -m pytest -q
+python scripts/test_ik.py
+python scripts/test_udp_action.py
+
+# Quest controller tracking만 (pass-through는 이 진단에서만 사용)
+python scripts/test_quest_tracking.py --host-ip <COMPANY_PC_IP>
+
+# Quest 영상: synthetic RGB 색 확인 / 실제 Isaac 영상
+python scripts/test_quest_video.py --pattern --host-ip <COMPANY_PC_IP>
+python scripts/test_quest_video.py --host-ip <COMPANY_PC_IP>
+
+# 하드웨어 없이 실제 HTTPS/WSS events·video·disconnect 검사
+python scripts/test_quest_video.py --self-test
+
+# 실제 두 process + 합성 controller WSS 입력의 전체 경로 검사 (GPU 필요)
+python scripts/test_pipeline.py
+
+# 실제 GPU HOME·좌우 독립 gripper·wrist camera parenting·RGB 검사
+cd ~/IsaacLab_2_3_2/IsaacLab
+./isaaclab.sh -p ~/stkim_ws/quest_robot_isaac/scripts/test_cameras.py --headless --device cuda:0
+```
+
+Camera test는 360 physics step 후 종료하고 `outputs/camera_check/`에 raw PNG, composite, 이동 후 PNG, camera pose JSON, 성공 시 `validation.json`을 저장합니다. `ISAAC SMOKE TEST PASSED` 메시지까지 확인하세요. 단순 process exit code만으로 통과를 판단하지 않습니다. Kit fast shutdown이 오류 exit code를 덮을 수 있어 traceback도 확인합니다. 일반 실행에서 snapshot만 원하면 `--snapshot-dir outputs/view --camera-debug`를 사용합니다.
+
+Pipeline test는 실제 Isaac와 Quest main server를 child process로 실행하고 합성 WSS 입력을 보냅니다. 15005/15556을 사용하며 8012는 비어 있어야 합니다. IK를 통과한 action 수신, 실제 RGB 영상 IPC, tracking loss HOLD, sender 재시작, simulator 재시작과 양쪽 종료를 검사한 뒤 `outputs/pipeline_check/`에 로그와 `validation.json`을 남깁니다. 물리 Quest 자체는 사용하지 않습니다.
+
+실제 Isaac 실행 중 양팔 HOME + 왼쪽 gripper만 닫는 별도 제어 진단:
+
+```bash
+python scripts/test_udp_action.py --send --left-gripper 1 --right-gripper 0 --seconds 3
+```
+
+Quest hardware acceptance는 다음을 확인하세요.
+
+1. calibration 후 머리를 고정하고 한 controller를 +10cm/+20cm 이동: `--verbose --no-filter`의 `rawL/rawR`, `Lxyz/Rxyz`가 .10/.20m. `IK FAIL`인 범위에서도 목표를 축소하지 않음.
+2. 한 축 30도 회전: `Lrot/Rrot` 약 30도, 실제 EE 방향 일치. 축 보정이 필요한 경우에만 `CONTROLLER_TO_EE_ROT`를 변경. 임의 angle gain/clamp 금지.
+3. trigger release=open / press=closed. 좌우가 독립. `--gripper-input squeeze`도 확인.
+4. BODY 중앙 크게, 양쪽 WRIST 작게. 손목 이동에 맞춰 raw camera와 Quest 시야가 동일하게 움직임.
+5. controller sleep/브라우저 종료 → tracking timeout → Isaac HOLD. 다시 연결 → 현재 held pose 기준 재보정.
+6. 어느 프로세스를 먼저 종료해도 다른 프로세스가 crash하지 않음. 종료 후 포트 재사용 가능.
+
+일부 XR client가 tracking이 끊겨도 유효한 stale pose를 계속 송신한다면 서버는 새 pose와 구분할 수 없습니다. 이벤트 정지, invalid matrix, 명시적 `connected/tracked=False`는 검출합니다. 실제 Quest sleep/occlusion 동작은 hardware 검사 항목입니다.
+
+## 구현 범위와 남은 실기 확인
+
+기존 HOME/asset/IK 수치 기준을 보존한 control, camera, video IPC와 dataset 연결 지점이 구현되어 있습니다. collision avoidance나 실제 로봇 torque safety, task scene/training pipeline은 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
+
+설치 버전에 특유한 카메라 Fabric 초기 pose 동기화와 STOP callback을 코드에 설명했습니다. 원본 package를 수정하지 않고 앱 초기화/종료 순서에서 처리합니다. Quest 착용 상태의 회전축 감각, LAN 인증서 신뢰, headset browser XR 진입, 실제 controller tracking loss, 사용자에게 편한 wrist 시야는 현장 확인이 필요합니다. 자세한 자동 실행 결과는 `VALIDATION_TELEOP.md`에 기록합니다.

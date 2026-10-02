@@ -1,0 +1,83 @@
+"""Relative 6DoF calibration and filtering in the installed wrapper's basis.
+
+No new axis swaps, translation clamps, or angle clamps occur here. Calibration
+uses an SO(3) projection of the rotation sum; filtering follows the SO(3)
+geodesic with log3/exp3 rather than averaging rotation matrix components.
+"""
+import numpy as np
+import pinocchio as pin
+
+from config import teleop_config as cfg
+
+
+def valid_pose(pose) -> bool:
+    pose = np.asarray(pose)
+    return (pose.shape == (4, 4) and np.isfinite(pose).all()
+            and np.allclose(pose[3], [0, 0, 0, 1], atol=1e-3)
+            and np.allclose(pose[:3, :3].T @ pose[:3, :3], np.eye(3), atol=0.03)
+            and abs(np.linalg.det(pose[:3, :3]) - 1) < 0.03)
+
+
+def project_so3(rotation):
+    u, _, vt = np.linalg.svd(rotation)
+    # Correct a possible reflection so det(R)=+1, not merely |det(R)|=1.
+    return u @ np.diag([1., 1., np.linalg.det(u @ vt)]) @ vt
+
+
+def average_pose(samples):
+    if not samples or not all(valid_pose(p) for p in samples):
+        raise ValueError("Calibration requires valid SE(3) samples")
+    samples = np.asarray(samples)
+    pose = np.eye(4)
+    pose[:3, 3] = samples[:, :3, 3].mean(axis=0)
+    pose[:3, :3] = project_so3(samples[:, :3, :3].sum(axis=0))
+    return pose
+
+
+def samples_are_still(samples) -> bool:
+    mean = average_pose(samples)
+    return all(np.linalg.norm(p[:3, 3] - mean[:3, 3]) <= cfg.CALIBRATION_POSITION_TOLERANCE
+               and np.linalg.norm(pin.log3(mean[:3, :3].T @ p[:3, :3])) <= cfg.CALIBRATION_ROTATION_TOLERANCE
+               for p in samples)
+
+
+class RelativePoseMapper:
+    """One arm's controller neutral pose maps to its robot anchor pose.
+
+The initial anchor is HOME. Recalibration anchors at the last commanded robot
+pose, so pressing R or reconnecting cannot snap the robot back to HOME.
+"""
+    def __init__(self, controller_start, robot_anchor, use_filter=True):
+        self.start = controller_start.copy()
+        self.anchor = robot_anchor.copy()
+        self.alpha_p = cfg.POSITION_FILTER_ALPHA if use_filter else 1.
+        self.alpha_r = cfg.ROTATION_FILTER_ALPHA if use_filter else 1.
+        self.basis = np.asarray(cfg.CONTROLLER_TO_EE_ROT)
+        if not np.allclose(self.basis.T @ self.basis, np.eye(3)) or not np.isclose(np.linalg.det(self.basis), 1.):
+            raise ValueError("CONTROLLER_TO_EE_ROT must be a proper rotation")
+        self.delta = np.zeros(3)
+        self.raw_delta = np.zeros(3)
+        self.relative_rotation = np.eye(3)
+
+    def target(self, current):
+        if not valid_pose(current):
+            raise ValueError("Invalid current controller pose")
+        self.raw_delta = current[:3, 3] - self.start[:3, 3]
+        # Preserve the validated 5 mm deadband around neutral. Outside it the
+        # full displacement is used (no threshold subtraction, no max clamp).
+        delta = np.where(np.abs(self.raw_delta) < cfg.POSITION_DEADBAND, 0., self.raw_delta)
+        self.delta += self.alpha_p * (delta - self.delta)
+        # At neutral R_rel=I. B R_rel B^T is an optional FIXED change of basis,
+        # initially identity; it changes axes but never changes rotation angle.
+        relative = self.start[:3, :3].T @ current[:3, :3]
+        relative = self.basis @ relative @ self.basis.T
+        omega = pin.log3(self.relative_rotation.T @ project_so3(relative))
+        self.relative_rotation = project_so3(self.relative_rotation @ pin.exp3(self.alpha_r * omega))
+        target = self.anchor.copy()
+        target.translation = self.anchor.translation + self.delta
+        target.rotation = self.anchor.rotation @ self.relative_rotation
+        return target
+
+    @property
+    def angle_degrees(self):
+        return float(np.rad2deg(np.linalg.norm(pin.log3(self.relative_rotation))))

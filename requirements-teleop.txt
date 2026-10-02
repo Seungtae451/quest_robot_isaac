@@ -1,0 +1,5 @@
+# Install only missing dependencies; do NOT upgrade the working environment.
+# TeleVuer remains the existing editable checkout described in README_TELEOP.md.
+vuer==0.0.60
+params-proto==2.13.2
+pyzmq==26.2.1

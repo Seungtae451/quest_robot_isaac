@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-
+import pinocchio as pin
 
 # ============================================================
 # Project path
@@ -30,8 +30,7 @@ from f14_ik import F14IK
 DEST_IP = "127.0.0.1"
 DEST_PORT = 5005
 
-MAGIC = b"F14Q"
-
+MAGIC = b"F16A"
 # magic + sequence + timestamp + 14 float32
 PACKET_FMT = "!4sId14f"
 
@@ -83,6 +82,21 @@ HOME_Q = np.concatenate([
 # Teleop settings
 # ============================================================
 
+# CONTROL_HZ = 30.0
+
+# POSITION_SCALE = 1.0
+
+# MAX_DELTA = np.array([
+#     0.30,
+#     0.30,
+#     0.30,
+# ])
+
+# DEADBAND = 0.005
+
+# FILTER_ALPHA = 0.2
+
+
 CONTROL_HZ = 30.0
 
 POSITION_SCALE = 1.0
@@ -94,8 +108,25 @@ MAX_DELTA = np.array([
 ])
 
 DEADBAND = 0.005
-
 FILTER_ALPHA = 0.2
+
+
+# ==========================================
+# Orientation
+# ==========================================
+
+ORIENTATION_SCALE = 1.0
+
+MAX_ROTATION_DEG = 60.0
+
+ROT_FILTER_ALPHA = 0.20
+
+
+# ==========================================
+# Gripper
+# ==========================================
+
+GRIPPER_FILTER_ALPHA = 0.30
 
 
 # ============================================================

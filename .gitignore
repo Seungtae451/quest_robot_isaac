@@ -1,3 +1,7 @@
 
 # Large Isaac generated USD files
 **/configuration/*_base.usd
+__pycache__/
+.pytest_cache/
+outputs/
+*.pyc
