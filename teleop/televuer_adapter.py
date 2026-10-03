@@ -18,6 +18,8 @@ import time
 
 import numpy as np
 from televuer import TeleVuerWrapper
+from televuer.tv_wrapper import (T_ROBOT_OPENXR, T_OPENXR_ROBOT,
+    transform_IPunitree_Brobot_world_arm_to_head_then_waist)
 from televuer.televuer import TeleVuer
 from vuer.schemas import MotionControllers, ImageBackground
 
@@ -137,8 +139,14 @@ class FreshTeleVuer(TeleVuer):
         with self.snapshot_lock:
             self.controller_valid.value = valid
             value = event.value if isinstance(event.value, dict) else {}
+            press_poses = None
+            if valid and valid_pose(self.head_pose):
+                head = T_ROBOT_OPENXR @ self.head_pose @ T_OPENXR_ROBOT
+                press_poses = [transform_IPunitree_Brobot_world_arm_to_head_then_waist(
+                    T_ROBOT_OPENXR @ np.asarray(value[side]).reshape(4,4,order="F") @ T_OPENXR_ROBOT,
+                    head, cfg.ARM_REFERENCE_MODE) for side in ("left", "right")]
             self.recording_buttons.update(value.get("leftState", {}), value.get("rightState", {}),
-                                          arrived, valid=valid)
+                                          arrived, valid=valid, poses=press_poses)
             if valid:
                 await super().on_controller_move(event, session, fps)
                 self.controller_time.value = time.monotonic()
@@ -226,6 +234,6 @@ class QuestInterface(TeleVuerWrapper):
         return {"controller": event_timing(controller_times, now, window),
                 "head": event_timing(head_times, now, window), **counters}
 
-    def recording_button_events(self):
+    def recording_button_events(self, with_poses=False):
         with self.tvuer.snapshot_lock:
-            return self.tvuer.recording_buttons.drain(time.monotonic())
+            return self.tvuer.recording_buttons.drain(time.monotonic(), with_poses=with_poses)

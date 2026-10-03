@@ -17,6 +17,7 @@ import time
 import aiohttp
 import msgpack
 import numpy as np
+import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -24,18 +25,21 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from test_pipeline import connect, stop
 from teleop.action_protocol import ActionSender
 from teleop.episode_protocol import EpisodeClient
-from robot.f14_config import HOME_Q
+from robot.f14_config import HOME_Q, F14_URDF_PATH, GRIPPER_FORWARD_AXIS, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT
+from robot.f14_ik import F14IK
 
 WSS_PORT = 18012
 
 
-async def feed(ws, monitor, episodes, seconds, displacement=0., buttons=()):
+async def feed(ws, monitor, episodes, seconds, displacement=0., buttons=(), rotations=None, measured=None):
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         poses = []
-        for x in (-.25, .25):
+        for index, x in enumerate((-.25, .25)):
             pose = np.eye(4)
             pose[:3, 3] = (x, 1.2, -.35 - displacement)
+            if rotations is not None:
+                pose[:3, :3] = pin.exp3(np.asarray(rotations[index]))
             poses.append(pose.flatten(order="F").tolist())
         head = np.eye(4); head[1, 3] = 1.5
         left = {"triggerValue": .25, "squeezeValue": 0., "aButton": "x" in buttons}
@@ -46,6 +50,8 @@ async def feed(ws, monitor, episodes, seconds, displacement=0., buttons=()):
                                                      "leftState": left, "rightState": right}}):
             await ws.send_bytes(msgpack.packb(message, use_bin_type=True))
         monitor.poll_feedback(); episodes.poll()
+        if measured is not None and monitor.ready:
+            measured.append(monitor.measured_state.copy())
         await asyncio.sleep(1 / 60)
 
 
@@ -80,6 +86,7 @@ async def run():
             sim = subprocess.Popen([sys.executable, "-u", "scripts/run_isaac_teleop.py", "--headless", "--device", "cuda:0",
                 "--record", "--scene-seed", "12", "--action-port", "15045", "--session-port", "15046",
                 "--video-endpoint", "tcp://127.0.0.1:15596", "--dataset-root", str(dataset_root),
+                "--snapshot-dir", str(output / "images"),
                 "--repo-id", "local/f14_recording_test"], cwd=ROOT, env=env, stdout=sim_log, stderr=subprocess.STDOUT)
             with closing(ActionSender("127.0.0.1", 15045)) as monitor, closing(EpisodeClient("127.0.0.1", 15046)) as episodes:
                 deadline = time.monotonic() + 70
@@ -118,9 +125,29 @@ async def run():
                     await feed(ws, monitor, episodes, .6, displacement=-.09)
                     np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.015)
                     result["a_press_controller_pose_is_neutral"] = True
-                    await feed(ws, monitor, episodes, 3., displacement=-.125)
+                    # Pure rotations must not command either arm, and the
+                    # actual physical jaws still face down. Then translate
+                    # while feeding different controller rotations per arm.
+                    still = monitor.measured_state[:14].copy()
+                    await feed(ws, monitor, episodes, 1., displacement=-.09,
+                               rotations=([.9, -.4, .7], [-.6, .8, -.9]))
+                    np.testing.assert_allclose(monitor.measured_state[:14], still, atol=.004)
+                    result["controller_rotations_do_not_move_arms"] = True
+                    trajectory = []
+                    await feed(ws, monitor, episodes, 3., displacement=-.125,
+                               rotations=([-.7, .9, -.2], [.9, -.3, .8]), measured=trajectory)
                     moved = monitor.measured_state[:14].copy()
                     assert np.max(np.abs(moved - HOME_Q)) > .02, "Robot did not move during episode"
+                    ik = F14IK(F14_URDF_PATH)
+                    tilt = [float(np.rad2deg(np.arccos(np.clip(np.dot(
+                        pose.rotation @ GRIPPER_FORWARD_AXIS, [0, 0, -1]), -1, 1))))
+                        for state in trajectory for pose in ik.forward_kinematics(state[:14])]
+                    orientation = [float(np.rad2deg(np.linalg.norm(pin.log3(rotation.T @ pose.rotation))))
+                        for pose, rotation in zip(ik.forward_kinematics(moved), (LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT))]
+                    assert max(orientation) < .5, orientation
+                    assert max(tilt) < 3., max(tilt)  # Bounded drives have finite tracking error.
+                    result["measured_downward_orientation_error_deg"] = orientation
+                    result["motion_max_grasp_axis_tilt_deg"] = max(tilt)
                     await click(ws, monitor, episodes, "b", displacement=-.125)
                     await wait_for(ws, monitor, episodes, "REVIEW", displacement=-.125)
                     frames = episodes.status["frames"]
@@ -156,11 +183,17 @@ async def run():
                     # calibration must not resurrect the preceding IK target.
                     await feed(ws, monitor, episodes, 5., displacement=-.035)
                     np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.016)
-                    await click(ws, monitor, episodes, "a", displacement=-.035)
-                    await wait_for(ws, monitor, episodes, "RECORDING", displacement=-.035)
-                    await feed(ws, monitor, episodes, 1., displacement=-.02)
-                    await click(ws, monitor, episodes, "b", displacement=-.02)
-                    await wait_for(ws, monitor, episodes, "REVIEW", displacement=-.02)
+                    # Move again AFTER waiting calibration, then press A. Every
+                    # episode must zero at this new pose, not the reset pose.
+                    await feed(ws, monitor, episodes, .8, displacement=.055)
+                    await click(ws, monitor, episodes, "a", displacement=.055)
+                    await wait_for(ws, monitor, episodes, "RECORDING", displacement=.055)
+                    await feed(ws, monitor, episodes, .6, displacement=.055)
+                    np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.015)
+                    result["every_a_press_recaptures_neutral"] = True
+                    await feed(ws, monitor, episodes, 1., displacement=.070)
+                    await click(ws, monitor, episodes, "b", displacement=.070)
+                    await wait_for(ws, monitor, episodes, "REVIEW", displacement=.070)
                     pending = dataset_root.parent / ".dataset_pending" / episodes.status["session_id"]
                     second_start = np.load(pending / "000000/vectors.npy")[:16]
                     np.testing.assert_allclose(second_start, first_start, atol=.005)

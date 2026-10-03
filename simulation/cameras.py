@@ -33,7 +33,8 @@ def create_cameras(fps=cfg.CAMERA_FPS, debug=False):
     ]
     cameras = {}
     for name, link, pos, rot, width, height in mounts:
-        path = f"{rigid_link_path(link)}/{name}_camera"
+        parent = rigid_link_path(link)
+        path = f"{parent}/{name}_camera"
         camera_cfg = CameraCfg(
             prim_path=path, update_period=1. / fps, width=width, height=height,
             data_types=["rgb"], update_latest_camera_pose=debug,
@@ -41,7 +42,8 @@ def create_cameras(fps=cfg.CAMERA_FPS, debug=False):
             # in which pos is measured; pos is always relative to parent link.
             offset=CameraCfg.OffsetCfg(pos=pos, rot=rot, convention="world"),
             spawn=sim_utils.PinholeCameraCfg(
-                focal_length=18., horizontal_aperture=24., clipping_range=(.01, 100.)),
+                focal_length=cfg.BODY_CAMERA_FOCAL_LENGTH if name == "front" else cfg.WRIST_CAMERA_FOCAL_LENGTH,
+                horizontal_aperture=cfg.CAMERA_HORIZONTAL_APERTURE, clipping_range=(.01, 100.)),
         )
         cameras[name] = Camera(camera_cfg)
         print(f"Camera {name}: {path}, {width}x{height}, parent offset={pos}, wxyz={rot}")

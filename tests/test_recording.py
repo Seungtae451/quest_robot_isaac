@@ -269,3 +269,26 @@ print('Official save rollback and recovery passed')
     result = subprocess.run([str(cfg.WRITER_PYTHON), "-c", program, str(tmp_path / "dataset")],
                             cwd=cfg.ROOT, env=environment, capture_output=True, text=True, timeout=40)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_each_a_event_keeps_its_own_press_pose_even_after_later_motion():
+    from teleop.xr_pose import DownwardPoseMapper
+    import pinocchio as pin
+    buttons = RecordingButtons(capacity=2)
+    buttons.update({}, {}, 1.)
+    first = np.repeat(np.eye(4)[None], 2, axis=0)
+    first[:, :3, 3] = [[.1, .2, .3], [.4, .5, .6]]
+    buttons.update({}, {'aButton': True}, 1.1, poses=first)
+    buttons.update({}, {}, 1.2, poses=first + 10)  # moved before parent poll
+    second = first.copy(); second[:, :3, 3] += .25
+    buttons.update({}, {'aButton': True}, 1.3, poses=second)
+    second[:, :3, 3] += 10  # source buffers may also be reused
+    events = buttons.drain(1.4, with_poses=True)
+    assert [e[0] for e in events] == ['a', 'a']
+    np.testing.assert_allclose(events[0][1], first)
+    np.testing.assert_allclose(events[1][1][:,:3,3], first[:,:3,3]+.25)
+    for _, poses in events:
+        for side, pose in zip(('left', 'right'), poses):
+            anchor = pin.SE3.Identity()
+            mapper = DownwardPoseMapper(pose, anchor, use_filter=False, side=side)
+            np.testing.assert_allclose(mapper.target(pose).translation, anchor.translation)

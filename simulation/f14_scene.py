@@ -36,6 +36,8 @@ def create_scene(camera_debug=False, scene_seed=None):
                                            stiffness=cfg.GRIPPER_STIFFNESS, damping=cfg.GRIPPER_DAMPING),
         },
     ))
+    from robot.appearance import apply_isaac_materials
+    apply_isaac_materials()
     if camera_debug:
         # Optional landmarks are camera diagnostics, separate from the
         # collidable tabletop task cube and its collection box.

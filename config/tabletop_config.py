@@ -1,7 +1,7 @@
 """Tabletop geometry in robot/world axes: +X forward, +Y left, +Z up."""
 
-# Preserve the table already placed in f14_scene.py (surface z = 0.30 m).
-TABLE_CENTER = (0.55, 0.0, 0.28)
+# Move 10 cm toward the body; preserve surface z = 0.30 m.
+TABLE_CENTER = (0.45, 0.0, 0.28)
 TABLE_SIZE = (0.60, 0.80, 0.04)
 TABLE_COLOR = (0.45, 0.30, 0.18)
 
@@ -10,7 +10,7 @@ BOX_CENTER_XY = TABLE_CENTER[:2]  # middle of the tabletop
 BOX_SIZE = (0.18, 0.18, 0.04)  # outside dimensions, including bottom
 BOX_WALL_THICKNESS = 0.01
 BOX_BOTTOM_THICKNESS = 0.008
-BOX_COLOR = (0.12, 0.40, 0.70)
+BOX_COLOR = (0.55, 0.80, 0.55)  # light green
 
 CUBE_COUNT = 1
 CUBE_SIZE = 0.03
@@ -26,3 +26,17 @@ CUBE_DROP_GAP = 0.004
 # Cubes spawn on either side (+Y/-Y) of the box, with this clearance.
 # Reserve the central strip across the full table length.
 BOX_SPAWN_CLEARANCE = 0.02
+
+# Spawn only at independently verified IK locations. The cache is rebuilt
+# before Isaac starts whenever URDF/HOME/table/camera/IK settings change.
+CUBE_SPAWN_REQUIRE_IK = True
+IK_SPAWN_GRID_STEP = 0.015  # exact verified XY locations; no unchecked jitter
+IK_SPAWN_PATH_STEP = 0.015  # Cartesian waypoint spacing for continuity checks
+IK_SPAWN_MAX_JOINT_STEP = 0.20  # reject branch jumps (rad per waypoint)
+IK_SPAWN_JOINT_MARGIN = 0.03  # keep ~1.7 deg away from URDF limits
+GRASP_LOCAL_OFFSET = (0.0, -0.225, -0.0225)  # wrist -> finger grasp center (m)
+GRASP_APPROACH_HEIGHT = 0.04
+GRASP_LIFT_HEIGHT = 0.06
+BOX_RELEASE_GAP = 0.01
+CUBE_GRIPPER_BOX_CLEARANCE = 0.08  # center clearance beyond box edge for open jaws
+SPAWN_CAMERA_MARGIN = 0.05  # cube corners must lie inside the central 90% image

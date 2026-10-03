@@ -1,4 +1,4 @@
-"""Relative 6DoF calibration and filtering in the installed wrapper's basis.
+"""Relative XYZ control with fixed downward grippers, plus legacy diagnostics.
 
 No new axis swaps, translation clamps, or angle clamps occur here. Calibration
 uses an SO(3) projection of the rotation sum; filtering follows the SO(3)
@@ -8,6 +8,7 @@ import numpy as np
 import pinocchio as pin
 
 from config import teleop_config as cfg
+from robot.f14_config import LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT
 from teleop.input_timing import timed_filter_alpha
 
 
@@ -35,15 +36,46 @@ def average_pose(samples):
     return pose
 
 
-def samples_are_still(samples) -> bool:
+def samples_are_still(samples, *, check_rotation=True) -> bool:
     mean = average_pose(samples)
     return all(np.linalg.norm(p[:3, 3] - mean[:3, 3]) <= cfg.CALIBRATION_POSITION_TOLERANCE
-               and np.linalg.norm(pin.log3(mean[:3, :3].T @ p[:3, :3])) <= cfg.CALIBRATION_ROTATION_TOLERANCE
+               and (not check_rotation or np.linalg.norm(pin.log3(mean[:3, :3].T @ p[:3, :3])) <= cfg.CALIBRATION_ROTATION_TOLERANCE)
                for p in samples)
 
 
+class DownwardPoseMapper:
+    """Controller translation only; EE orientation is fixed in robot/world axes.
+
+    Calibration/recentering changes the position anchor, never the downward
+    rotation. Controller orientation is validated as tracking data but is not
+    used in the target or its filter. IK still solves the complete EE pose.
+    """
+    def __init__(self, controller_start, robot_anchor, use_filter=True, *, side):
+        if side not in ("left", "right"):
+            raise ValueError("Expected left or right arm")
+        if not valid_pose(controller_start):
+            raise ValueError("Invalid neutral controller pose")
+        self.start = controller_start.copy()
+        self.anchor = robot_anchor.copy()
+        self.anchor.rotation = (LEFT_EE_DOWN_ROT if side == "left" else RIGHT_EE_DOWN_ROT).copy()
+        self.alpha_p = cfg.POSITION_FILTER_ALPHA if use_filter else 1.
+        self.delta = np.zeros(3)
+        self.raw_delta = np.zeros(3)
+
+    def target(self, current, dt=None):
+        if not valid_pose(current):
+            raise ValueError("Invalid current controller pose")
+        self.raw_delta = current[:3, 3] - self.start[:3, 3]
+        delta = np.where(np.abs(self.raw_delta) < cfg.POSITION_DEADBAND, 0., self.raw_delta)
+        alpha = self.alpha_p if dt is None else timed_filter_alpha(self.alpha_p, dt, cfg.FILTER_REFERENCE_HZ)
+        self.delta += alpha * (delta - self.delta)
+        target = self.anchor.copy()
+        target.translation = self.anchor.translation + self.delta
+        return target
+
+
 class RelativePoseMapper:
-    """One arm's controller neutral pose maps to its robot anchor pose.
+    """Legacy 6DoF mapper for offline wrist diagnostics, not live teleoperation.
 
     Recalibration anchors at the measured robot pose. Rotation stays wrist-local:
     controller twist/bend axes map to the mirrored F14 hand frames, not world axes.

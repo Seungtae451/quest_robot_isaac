@@ -22,7 +22,7 @@ import pinocchio as pin
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from robot.f14_config import HOME_Q, F14_URDF_PATH
+from robot.f14_config import HOME_Q, F14_URDF_PATH, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT
 from robot.f14_ik import F14IK
 from teleop.action_protocol import ActionSender
 from teleop.xr_video import VideoSubscriber
@@ -132,17 +132,14 @@ async def run():
                     actual = ik.forward_kinematics(action[:14])
                     translation_errors = []
                     rotation_errors = []
-                    from config import teleop_config as cfg
-                    for side, anchor, pose in zip(("left", "right"), home, actual):
+                    for rotation, anchor, pose in zip((LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT), home, actual):
                         translation_errors.append(float(np.linalg.norm(pose.translation - anchor.translation - [-.04, 0., 0.])))
-                        basis = np.asarray(getattr(cfg, f"{side.upper()}_CONTROLLER_TO_EE_ROT"))
-                        expected_rotation = anchor.rotation @ basis @ pin.exp3(np.array([0., 0., .02])) @ basis.T
-                        rotation_errors.append(float(np.linalg.norm(pin.log3(expected_rotation.T @ pose.rotation))))
+                        rotation_errors.append(float(np.linalg.norm(pin.log3(rotation.T @ pose.rotation))))
                     assert max(translation_errors) < .001 and max(rotation_errors) < .001, (translation_errors, rotation_errors)
                     result["measured_fk_translation_errors_m"] = translation_errors
                     result["measured_fk_rotation_errors_rad"] = rotation_errors
                     result["received_closures"] = action[14:].tolist()
-                    print("Pipeline: WSS -> 6DoF IK -> bounded drive -> measured Isaac pose verified", flush=True)
+                    print("Pipeline: WSS -> XYZ/downward IK -> bounded drive -> measured Isaac pose verified", flush=True)
                     # A genuinely unreachable controller pose requests arm
                     # braking; returning to a different reachable pose must
                     # start gradually from the held measured state.

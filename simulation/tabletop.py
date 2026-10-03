@@ -43,6 +43,10 @@ def sample_cube_poses(seed=None):
     """
     rng = random.Random(seed)
     regions = cube_spawn_regions()
+    verified = None
+    if cfg.CUBE_SPAWN_REQUIRE_IK:
+        from robot.spawn_workspace import ensure_spawn_pool
+        verified = ensure_spawn_pool()["candidates"]
     if not any(xmax - xmin > cfg.CUBE_SIZE and ymax - ymin > cfg.CUBE_SIZE
                for xmin, xmax, ymin, ymax in regions):
         raise ValueError("Cube does not fit on either side of the collection box")
@@ -54,10 +58,17 @@ def sample_cube_poses(seed=None):
             allowed = [r for r in regions if r[1] - r[0] > 2 * radius and r[3] - r[2] > 2 * radius]
             if not allowed:
                 continue
-            weights = [(r[1] - r[0] - 2 * radius) * (r[3] - r[2] - 2 * radius) for r in allowed]
-            xmin, xmax, ymin, ymax = rng.choices(allowed, weights=weights, k=1)[0]
-            x = rng.uniform(xmin + radius, xmax - radius)
-            y = rng.uniform(ymin + radius, ymax - radius)
+            if verified is not None:
+                candidate = rng.choice(verified)
+                x, y = candidate["x"], candidate["y"]
+                if not any(xmin+radius<=x<=xmax-radius and ymin+radius<=y<=ymax-radius
+                           for xmin,xmax,ymin,ymax in allowed):
+                    continue
+            else:
+                weights = [(r[1] - r[0] - 2 * radius) * (r[3] - r[2] - 2 * radius) for r in allowed]
+                xmin, xmax, ymin, ymax = rng.choices(allowed, weights=weights, k=1)[0]
+                x = rng.uniform(xmin + radius, xmax - radius)
+                y = rng.uniform(ymin + radius, ymax - radius)
             if any(abs(x - px) < radius + pr + cfg.CUBE_SEPARATION
                    and abs(y - py) < radius + pr + cfg.CUBE_SEPARATION
                    for px, py, pr in footprints):

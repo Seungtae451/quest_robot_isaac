@@ -1,4 +1,4 @@
-"""Process A: Quest controller snapshots -> relative SE(3) -> IK -> UDP 16D.
+"""Process A: Quest XYZ + grippers -> downward EE pose IK -> UDP 16D.
 
 An independent video SUB receives Isaac's three-camera dashboard and forwards
 it to TeleVuer. This process NEVER imports Isaac Sim. TeleVuer itself starts
@@ -19,7 +19,7 @@ from robot.f14_config import F14_URDF_PATH, HOME_Q
 from robot.f14_ik import F14IK
 from robot.gripper import normalize_input
 from teleop.action_protocol import ActionSender
-from teleop.xr_pose import RelativePoseMapper, average_pose, samples_are_still
+from teleop.xr_pose import DownwardPoseMapper, average_pose, samples_are_still
 from teleop.input_timing import timed_filter_alpha
 from teleop.episode_protocol import EpisodeClient
 from config import recording_config as recording_cfg
@@ -35,9 +35,9 @@ def parser():
     result.add_argument("--gripper-input", choices=("trigger", "squeeze"), default="trigger")
     result.add_argument("--trigger-encoding", choices=("auto", "legacy-inverted-10", "standard"), default="auto")
     result.add_argument("--no-filter", action="store_true")
-    result.add_argument("--position-only", action="store_true", help="Diagnostic: retain the working translation-only behavior")
+    result.add_argument("--position-only", action="store_true", help="Compatibility option: XYZ with fixed downward grippers is now always enabled")
     result.add_argument("--verbose", action="store_true")
-    result.add_argument("--wrist-axis-test", action="store_true", help="Observe six guided wrist-axis trials; N + Enter starts each trial")
+    result.add_argument("--wrist-axis-test", action="store_true", help="Observe controller rotation vs fixed downward targets; N + Enter starts each trial (rotation never commands the robot)")
     result.add_argument("--wrist-test-dir", type=Path, default=Path("outputs/wrist_axis_check"))
     result.add_argument("--timing-output", type=Path, default=Path("outputs/quest_input_check/runtime.jsonl"),
                         help="Append input-rate, processing-latency and IK timing measurements")
@@ -61,6 +61,7 @@ def main(argv=None):
     encoding = trigger_encoding(args.trigger_encoding) if args.gripper_input == "trigger" else "standard"
     ik = F14IK(F14_URDF_PATH)
     print("HOME EE positions:", [p.translation for p in ik.forward_kinematics(HOME_Q)])
+    print("Control: controller XYZ displacement + grippers; both EE orientations fixed vertically downward.")
     print(f"Gripper input={args.gripper_input}, encoding={encoding}; semantic 0=open, 1=closed")
     print("R + Enter = recalibrate at held robot pose. Ctrl+C = clean shutdown.")
     wrist_test = None
@@ -104,8 +105,8 @@ def main(argv=None):
                 restarted = sender.poll_feedback()
                 episodes.poll()
                 data, fresh, serial = tv.snapshot()
-                for button in tv.recording_button_events():
-                    can_start = (mappers is not None and fresh and sender.ready and not restarted
+                for button, press_poses in tv.recording_button_events(with_poses=True):
+                    can_start = (press_poses is not None and mappers is not None and fresh and sender.ready and not restarted
                                  and episodes.status.get("start_allowed", False)) if episodes.available else False
                     if episodes.available and (button != "a" or episodes.status["state"] != "READY" or can_start):
                         if episodes.button(button) and button == "a" and episodes.status["state"] == "READY":
@@ -115,10 +116,13 @@ def main(argv=None):
                             q_current = sender.measured_state[:14].astype(float).copy()
                             grippers = sender.measured_state[14:].astype(float).copy()
                             anchors = ik.forward_kinematics(q_current)
-                            mappers = [RelativePoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
+                            mappers = [DownwardPoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
                                 for side, pose, anchor in zip(("left", "right"),
-                                    (data.left_wrist_pose, data.right_wrist_pose), anchors)]
+                                    press_poses, anchors)]
                             last_control_time = start
+                            print("New episode neutral captured at A press: "
+                                  f"Lxyz={np.round(press_poses[0,:3,3], 4)} "
+                                  f"Rxyz={np.round(press_poses[1,:3,3], 4)}")
                 if episodes.available and episodes.status["state"] != previous_recording_state:
                     previous_recording_state = episodes.status["state"]
                     print(f"Episode: {previous_recording_state}; frames={episodes.status['frames']} "
@@ -168,7 +172,7 @@ def main(argv=None):
                         samples[0].append(data.left_wrist_pose.copy())
                         samples[1].append(data.right_wrist_pose.copy())
                         if len(samples[0]) >= cfg.CALIBRATION_SAMPLES:
-                            if not all(samples_are_still(s) for s in samples):
+                            if not all(samples_are_still(s, check_rotation=False) for s in samples):
                                 print("Calibration motion detected; hold still and retry.")
                                 samples = [[], []]
                             else:
@@ -177,7 +181,7 @@ def main(argv=None):
                                 q_current = sender.measured_state[:14].astype(float).copy()
                                 grippers = sender.measured_state[14:].astype(float).copy()
                                 anchors = ik.forward_kinematics(q_current)
-                                mappers = [RelativePoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
+                                mappers = [DownwardPoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
                                            for side, s, anchor in zip(("left", "right"), samples, anchors)]
                                 last_control_time = start
                                 print("Calibration complete. HOME HOLD; A starts recording and teleoperation."
@@ -195,9 +199,6 @@ def main(argv=None):
                     skipped_events += max(0, serial - last_serial - 1)
                     input_ages.append(max(0., start - tv.last_snapshot_controller_time) * 1000)
                     targets = [mapper.target(pose, dt=control_dt) for mapper, pose in zip(mappers, (data.left_wrist_pose, data.right_wrist_pose))]
-                    if args.position_only:
-                        for target, mapper in zip(targets, mappers):
-                            target.rotation = mapper.anchor.rotation.copy()
                     solve_started = time.perf_counter()
                     solution, success = ik.solve(
                         *targets, sender.measured_state[:14], max_iter=cfg.IK_MAX_ITER, eps=cfg.IK_EPS,
@@ -244,7 +245,7 @@ def main(argv=None):
                     info = ""
                     if mappers:
                         info = (f" Lxyz={mappers[0].delta.round(3)} Rxyz={mappers[1].delta.round(3)}"
-                                f" Lrot={mappers[0].angle_degrees:.1f}deg Rrot={mappers[1].angle_degrees:.1f}deg")
+                                " orientation=DOWN_FIXED")
                         if args.verbose:
                             info += f" rawL={mappers[0].raw_delta.round(3)} rawR={mappers[1].raw_delta.round(3)} residual={ik.last_error:.3g}"
                         if state.startswith("IK FAIL") and ik.last_diagnostics:

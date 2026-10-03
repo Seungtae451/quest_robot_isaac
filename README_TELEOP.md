@@ -1,6 +1,8 @@
 # F14 / FlaminGO — Quest 3 × Isaac Sim teleoperation
 
-두 개의 터미널에서 실행하는 6DoF 양팔 teleoperation입니다. 왼팔 7 + 오른팔 7 + 좌우 gripper 2의 **16D semantic action**과 실제 VLA RGB 카메라 3개를 사용합니다. HOME은 `robot/f14_config.py`에서 설정합니다.
+두 개의 터미널에서 실행하는 **XYZ 이동 + 그리퍼 개폐** 양팔 teleoperation입니다. 양쪽 그리퍼 방향은 항상 수직 아래로 고정해 IK를 계산하며, 컨트롤러 회전은 조작에 반영하지 않습니다. 왼팔 7 + 오른팔 7 + 좌우 gripper 2의 **16D semantic action**과 실제 VLA RGB 카메라 3개를 사용합니다. HOME과 고정 EE 방향은 `robot/f14_config.py`에서 설정합니다.
+
+수직 그리퍼의 손가락 끝은 손목 링크보다 약 23.5cm 아래입니다. 기존 HOME 높이는 테이블과 충돌하므로, 새 손목 HOME은 **왼쪽 `(0.40, 0.18, 0.57)`m, 오른쪽 `(0.40, -0.18, 0.57)`m**로 설정했습니다. 기존 위치보다 약 10cm 앞·10cm 위·각각 5cm 바깥쪽이며, 손가락 끝은 현재 테이블 위 약 3.5cm에 놓입니다. 고정 방향을 유지할 수 있는 관절 한계 안의 IK 자세입니다. 변경 후에는 **Isaac과 Quest 송신기를 모두 재시작**하세요.
 
 현재 IK URDF는 `assets/F14_URDF_rev_2_0_1 2/urdf/FlaminGO_14Dof_Arm_Robot_v2.urdf`입니다. action과 HOME은 이 모델의 관절 각도를 사용합니다. 기존 Isaac USD와 축이 반대인 오른팔 dof3/dof4는 시뮬레이터 경계에서 부호를 변환하며, 측정 state와 수신 관절 한계도 같은 기준으로 변환합니다. 따라서 두 관절 HOME의 부호를 바꿔도 실제 시작 자세는 유지됩니다.
 
@@ -38,15 +40,15 @@ https://vuer.ai?ws=wss://<COMPANY_PC_IP>:8012&grid=False
 
 Quest Browser에서 주소를 열고 인증서 신뢰를 처리한 뒤 VR/XR 세션에 들어가세요. **controller mode**입니다. 초기 2초 안정화 후 서로 다른 이벤트에서 45개 pose sample을 모읍니다. 머리와 양손을 가만히 유지하고 trigger를 놓으세요. 움직임이 크면 평균을 버리고 다시 수집합니다.
 
-두 프로세스의 실행 순서는 자유입니다. 둘 다 준비되기 전에는 arm HOME / gripper open을 유지합니다. Quest terminal에서 **`R` + Enter**를 입력하면 팔을 감속 정지하고 현재 측정된 로봇 자세를 기준으로 재보정합니다. 재접속과 프로세스 재시작도 자동 재보정합니다. 양쪽 모두 Ctrl+C로 종료합니다.
+두 프로세스의 실행 순서는 자유입니다. 둘 다 준비되기 전에는 arm HOME / gripper open을 유지합니다. Quest terminal에서 **`R` + Enter**를 입력하면 팔을 감속 정지하고 현재 측정된 손목 XYZ를 기준으로 재보정합니다. EE 방향은 재보정 후에도 수직 아래로 유지합니다. 재접속과 프로세스 재시작도 자동 재보정합니다. 양쪽 모두 Ctrl+C로 종료합니다.
 
 ## 확인한 환경과 의존성
 
-### 손목 축·부호 실험
+### 컨트롤러 회전 무시 확인
 
-Isaac을 평소처럼 실행하고, Quest 송신기를 아래 옵션으로 실행합니다. 기존
-회전 매핑을 관찰하며 속도·가속도 제한은 유지합니다. `--no-filter`는 입력
-필터의 지연만 제거합니다.
+Isaac을 평소처럼 실행하고, Quest 송신기를 아래 옵션으로 실행합니다.
+컨트롤러 회전을 관찰하는 진단이며, 회전으로 로봇 방향을 바꾸지는 않습니다.
+속도·가속도 제한은 유지합니다. `--no-filter`는 입력 필터의 지연만 제거합니다.
 
 ```bash
 python scripts/run_quest_teleop.py --wrist-axis-test --no-filter
@@ -61,12 +63,12 @@ Quest 연결 및 보정 후 터미널 안내에 따라 왼손 비틀기 → 위�
 
 `WORLD[X,Y,Z]deg`의 controller / target / measured는 각 시험 시작 대비 회전
 벡터입니다. 공통 축은 X 앞, Y 왼쪽, Z 위이고 부호는 오른손 법칙입니다.
-`HAND[twist,bend,sideways]deg`의 controller / target으로 손목 회전축 대응을
-비교합니다. 실제 measured에는 관절 추종 지연 및 IK 실패 영향이 있습니다. WORLD 벡터는 손목의 초기 방향이 서로 달라 같을 필요가 없습니다.
+컨트롤러 XYZ를 고정한 채 회전하면 controller 벡터만 변하고 target 벡터는
+0으로 유지되어야 합니다. 실제 measured에는 관절 추종 오차가 있을 수 있습니다.
 로컬 링크 축 벡터도 JSON에 저장합니다. measured는 Isaac 관절 feedback의 URDF FK이며 최대 60Hz로
 갱신됩니다. 손이 먼저 움직인 순간의 지연과 축 불일치를 혼동하지 말고 끝에서
 잠시 유지한 기록도 비교하세요. `IK FAIL`이면 목표와 실제가 달라지는 것이
-회전 매핑 오류만을 뜻하지 않습니다.
+회전 입력의 영향만을 뜻하지 않습니다.
 
 결과는 `outputs/wrist_axis_check/<시각>/summary.json`과 시험별 JSON에
 저장됩니다. 자동으로 축이나 부호를 수정하지 않습니다. 실제 Quest의 여섯
@@ -161,26 +163,36 @@ Isaac는 매 physics step(60Hz)에서 연속 관절 목표를 생성합니다. �
 
 ## Pose / IK
 
+현재 URDF의 양팔 가동범위를 scikit-robot으로 시각화하려면
+[ARM_WORKSPACE.md](ARM_WORKSPACE.md)를 참고하세요. 자유 방향 범위와 현재
+수직 그리퍼 조건의 범위를 테이블 위에서 비교하는 HTML/PNG를 생성합니다.
+
 설치된 wrapper는 이미 OpenXR → robot basis를 변환합니다. `+X=forward, +Y=left, +Z=up`. 기본 `arm_reference_mode="head_yaw"`는 head 위치와 yaw에 상대적인 pose를 반환합니다. 이를 그대로 유지했으므로 acceptance test 때 머리는 고정하세요. 머리를 움직이면 wrapper 좌표도 변합니다.
 
 ```python
 p_target = p_robot_anchor + (p_controller_now - p_controller_neutral)
-R_rel = R_controller_neutral.T @ R_controller_now
-R_target = R_robot_anchor @ B @ R_rel @ B.T
+R_target = LEFT_EE_DOWN_ROT  # right arm: RIGHT_EE_DOWN_ROT
+# R_target @ [0, -1, 0] == [0, 0, -1]
 ```
 
-anchor는 보정 시 실제 측정한 로봇 자세의 FK입니다. `B`는 양손별
-`LEFT_CONTROLLER_TO_EE_ROT` / `RIGHT_CONTROLLER_TO_EE_ROT`이며 컨트롤러
-로컬 X(비틀기), Y(위아래 꺾기), Z(좌우 꺾기)를 그리퍼 손목 축에 대응합니다.
-현재 운용 solver는 **전체 6DoF IK**입니다. 회전 목표를 구현할 때 5~7번
-관절만 직접 지정하는 방식은 아니며 모든 팔 관절이 함께 사용될 수 있습니다.
+위치 anchor는 보정 시 실제 측정한 로봇 자세의 FK입니다. 컨트롤러의
+비틀기·위아래 꺾기·좌우 꺾기는 모두 무시하고, 위치 변화량만 사용합니다.
+보정의 정지 여부도 위치로만 판단합니다. URDF 손가락의 전방 축은 손목
+링크의 `-Y`이므로, 양손별 고정 회전으로 이 축을 world `-Z`에 맞춥니다.
+Yaw도 고정하며 손가락 개폐 축은 world Y에 놓입니다.
 
-위치·회전 gain은 1이고 위치에는 5mm neutral deadband가 있습니다. 최대
-이동량이나 회전량으로 목표를 축소하지 않습니다. 새 controller event만
-처리하고, SO(3) 및 위치·그리퍼 필터 계수는 실제 처리 간격에 따라 보정해
-기존 30Hz의 응답 시간을 유지합니다. `--no-filter`는 입력 필터만 끄며
-관절 속도·가속도 제한은 유지합니다. `--position-only`는 EE 방향을 보정
-방향에 고정합니다 (orientation 조건 자체를 제거하는 옵션은 아닙니다).
+solver는 **XYZ와 고정 방향을 함께 푸는 전체 pose IK**입니다. 방향 조건을
+없애는 방식이 아니며, 5~7번을 포함한 모든 팔 관절이 필요에 따라 움직여
+수직 목표를 유지합니다. 위치 gain은 1이고 5mm neutral deadband가 있습니다.
+최대 이동량으로 목표를 축소하지 않습니다. 새 controller event만 처리하고,
+위치·그리퍼 필터 계수는 실제 처리 간격에 따라 보정해 기존 30Hz의 응답
+시간을 유지합니다. `--no-filter`는 입력 필터만 끄며 관절 속도·가속도 제한은
+유지합니다. `--position-only`는 호환 옵션으로, 기본 동작과 동일합니다.
+
+각 IK 목적지의 방향은 항상 수직 아래입니다. 실제 물리 드라이브에는 추종
+오차가 있으며, 속도 제한 관절 경로의 중간 자세에는 작은 방향 오차가 있을
+수 있습니다. 가동범위 밖이나 테이블 충돌이 생기는 XYZ는 여전히 도달할 수
+없습니다. LeRobot에는 이전과 똑같이 모든 관절의 실제 값과 구동 명령을 저장합니다.
 
 rev 2.0.1 URDF, `left/right_dof7_link`의 LOCAL Jacobian DLS를 사용합니다.
 현재 최대 100 iteration, `eps=2e-4`, `dt=.3`, damping `1e-4`입니다.
@@ -210,9 +222,11 @@ A 이전에는 HOME과 열린 그리퍼를 유지하며, 녹화 중에만 조작
 Quest 영상 평면은 `config/teleop_config.py`의 `QUEST_SCREEN_DISTANCE=1.5`m에 표시합니다.
 실행 명령과 π0.5 연결은 [RECORDING_LEROBOT.md](RECORDING_LEROBOT.md)를 참고하세요.
 
-현재 장면은 60×80cm 테이블(상판 높이 30cm), 테이블 중앙의 열린 수집 상자(외부 18×18×8cm), 밝은 빨간색 3cm 큐브 1개를 포함합니다. 상자는 바닥과 네 벽에 충돌이 있고 윗면이 열려 있습니다. 큐브는 20g rigid body로 중력·충돌·마찰이 적용되어 테이블 위에 놓이거나 상자 안에 담길 수 있습니다.
+현재 장면은 60×80cm 테이블(상판 높이 30cm), 테이블 중앙의 열린 수집 상자(외부 18×18×4cm), 밝은 빨간색 3cm 큐브 1개를 포함합니다. 상자는 바닥과 네 벽에 충돌이 있고 윗면이 열려 있습니다. 큐브는 20g rigid body로 중력·충돌·마찰이 적용되어 테이블 위에 놓이거나 상자 안에 담길 수 있습니다.
 
 큐브는 Isaac 시작 시 매번 다른 위치와 yaw로 생성됩니다. 상자 양쪽 경계에서 2cm 이상 떨어진 **왼쪽(+Y) 또는 오른쪽(-Y) 구역**에서 생성합니다. 상자가 있는 중앙 띠에는 생성하지 않고, 몸통 쪽 테이블 끝을 기준으로 길이의 **1/4~2/3 구간**만 사용합니다. 가까운 첫 1/4과 먼 쪽 마지막 1/3에는 생성하지 않습니다. 회전한 큐브의 모서리까지 금지 구역과 테이블 가장자리를 침범하지 않게 배치합니다. 물리 동작 중 사용자가 왼쪽 구역으로 옮기는 것은 가능합니다.
+
+테이블 중심은 `TABLE_CENTER=(0.45, 0, 0.28)`로 기존보다 몸통 쪽으로 10cm 이동했습니다. 기본 큐브 생성은 실제 teleop의 100회 IK로 HOME→접근→집기→들기→상자 위→내려놓기 경로를 검사한 **260개 위치(좌우 각각 130개)**로 제한합니다. 카메라 시야 안의 위치만 사용하며, 초기 팔에 가려지는 위치는 허용합니다. 세부 설정과 범위는 [TABLETOP_IK_SPAWN.md](TABLETOP_IK_SPAWN.md)를 참고하세요.
 
 배치·상자 크기·큐브 수/크기/색상은 `config/tabletop_config.py`에서 수정합니다. `CUBE_COUNT`를 늘리면 초기 큐브끼리 겹치지 않게 배치합니다. 같은 배치를 재현하려면 Isaac 실행 명령에 `--scene-seed 42`를 추가하세요. 기존 `--camera-debug` 색상 큐브는 별도의 시야 확인용입니다.
 
@@ -230,11 +244,11 @@ python scripts/test_joint_motion.py --headless --device cuda:0
 
 | observation 이름 | parent | 해상도 | offset (m) | rotation wxyz |
 |---|---|---|---|---|
-| front / BODY | base_link | 640×480 | (.08, 0, .85) | (.906308, 0, .422618, 0) |
+| front / BODY | base_link | 640×480 | (.25, 0, .95) | (.803857, 0, .594823, 0) |
 | left_wrist | left_dof7_link | 320×240 | (.055, -.03, 0) | (.379928, -.379928, .596368, -.596368) |
 | right_wrist | right_dof7_link | 320×240 | (-.055, -.03, 0) | (.596368, .596368, -.379928, -.379928) |
 
-Body는 전방 아래 50도(기존보다 20도 아래), wrist는 link의 -Y 집기 방향을 기준으로 camera 아래 25도입니다. 좌우 link가 mirror이므로 영상의 위쪽 방향도 각각 local +X/-X로 맞췄습니다. offset은 config에서 조정합니다. 실제 rigid link를 이름으로 찾아 그 아래 camera prim을 생성하므로 import directory나 joint numeric ordering에 의존하지 않습니다.
+Body는 전방 아래 73도이며, 높이 95cm·전방 25cm에서 테이블을 내려다봅니다. Body focal length는 16mm로 시야를 넓혔습니다. wrist는 link의 -Y 집기 방향을 기준으로 camera 아래 25도입니다. 좌우 link가 mirror이므로 영상의 위쪽 방향도 각각 local +X/-X로 맞췄습니다. offset은 config에서 조정합니다. 실제 rigid link를 이름으로 찾아 그 아래 camera prim을 생성하므로 import directory나 joint numeric ordering에 의존하지 않습니다.
 
 세 센서의 `camera.data.output["rgb"]`를 그대로 유지합니다. raw는 `(1,H,W,3)` uint8 tensor이며 robot state는 `(1,16)`입니다. operator 변환 때만 batch index를 선택하고 CPU로 복사합니다. dataset callback은 아래 구조를 받습니다.
 
@@ -323,7 +337,7 @@ python scripts/test_udp_action.py --send --left-gripper 1 --right-gripper 0 --se
 Quest hardware acceptance는 다음을 확인하세요.
 
 1. calibration 후 머리를 고정하고 한 controller를 +10cm/+20cm 이동: `--verbose --no-filter`의 `rawL/rawR`, `Lxyz/Rxyz`가 .10/.20m. `IK FAIL`인 범위에서도 목표를 축소하지 않음.
-2. 한 축 30도 회전: `Lrot/Rrot` 약 30도, 실제 EE 방향 일치. 추가 축 보정이 필요한 경우 양손별 `LEFT_CONTROLLER_TO_EE_ROT` / `RIGHT_CONTROLLER_TO_EE_ROT`를 확인. 임의 angle gain/clamp 금지.
+2. 컨트롤러 XYZ를 고정한 채 각 축을 회전: 팔은 움직이지 않고 양쪽 그리퍼는 아래를 향함. XYZ 이동 중에도 로그는 `orientation=DOWN_FIXED`, 그리퍼 방향 유지.
 3. trigger release=open / press=closed. 좌우가 독립. `--gripper-input squeeze`도 확인.
 4. BODY 중앙 크게, 양쪽 WRIST 작게. 손목 이동에 맞춰 raw camera와 Quest 시야가 동일하게 움직임.
 5. controller sleep/브라우저 종료 → tracking timeout → Isaac HOLD. 다시 연결 → 현재 held pose 기준 재보정.
@@ -335,4 +349,8 @@ Quest hardware acceptance는 다음을 확인하세요.
 
 control, camera, video IPC, LeRobot v3 에피소드 수집과 tabletop 장면이 구현되어 있습니다. 모델 학습은 별도 LeRobot π0.5 환경에서 수행합니다. collision avoidance나 실제 로봇 torque safety는 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
 
-설치 버전에 특유한 카메라 Fabric 초기 pose 동기화와 STOP callback을 코드에 설명했습니다. 원본 package를 수정하지 않고 앱 초기화/종료 순서에서 처리합니다. Quest 착용 상태의 회전축 감각, LAN 인증서 신뢰, headset browser XR 진입, 실제 controller tracking loss, 사용자에게 편한 wrist 시야는 현장 확인이 필요합니다. 자세한 자동 실행 결과는 `VALIDATION_TELEOP.md`에 기록합니다.
+설치 버전에 특유한 카메라 Fabric 초기 pose 동기화와 STOP callback을 코드에 설명했습니다. 원본 package를 수정하지 않고 앱 초기화/종료 순서에서 처리합니다. Quest 착용 상태의 XYZ 조작감, LAN 인증서 신뢰, headset browser XR 진입, 실제 controller tracking loss, 사용자에게 편한 wrist 시야는 현장 확인이 필요합니다. 자세한 자동 실행 결과는 `VALIDATION_TELEOP.md`에 기록합니다.
+
+로봇 외형 색상은 `robot/appearance.py`의 `PALETTE`에서 관리합니다. 받침 기둥과 중앙 상단 부품을 포함한 로봇 전체는 팔과 같은 블랙, 그리퍼 손가락은 파란색 `#2F90CE`입니다. Isaac에서는 링크별 재질을 적용하며 URDF와 가동범위 HTML에도 같은 색 구성을 반영했습니다.
+
+녹화 시작 A를 누를 때마다 해당 버튼 입력 프레임의 양손 XYZ를 새 중립 기준으로 잡고 이동 필터를 초기화합니다. 대기 중 손을 옮겨도 이전 에피소드의 기준을 사용하지 않습니다. Quest 로그의 `New episode neutral captured at A press`로 매 시작의 기준 갱신을 확인할 수 있습니다. REVIEW에서 저장하는 A는 기준을 바꾸지 않습니다.

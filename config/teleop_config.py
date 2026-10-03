@@ -14,12 +14,14 @@ CAMERA_FPS = 30.0
 # Mapping gains are deliberately fixed at one. Filters affect transient response,
 # not steady-state gain. Unreachable targets are rejected by IK, never rescaled.
 POSITION_SCALE = 1.0
-ORIENTATION_SCALE = 1.0
+ORIENTATION_SCALE = 1.0  # legacy offline mapping diagnostics only
 POSITION_DEADBAND = 0.005
 POSITION_FILTER_ALPHA = 0.2
-ROTATION_FILTER_ALPHA = 0.2
+ROTATION_FILTER_ALPHA = 0.2  # legacy offline mapping diagnostics only
 GRIPPER_FILTER_ALPHA = 0.3
 CONTROLLER_TO_EE_ROT = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.))
+# Legacy wrist-axis diagnostics; live control ignores controller rotation.
+# Fixed downward EE rotations live in robot/f14_config.py beside HOME.
 # Map controller LOCAL [twist X, bend Y, sideways Z] to each wrist link.
 # The hand frame is [forward, left, up]: forward is link -Y for both arms,
 # left/up are link -Z/+X on the left, and +Z/-X on the mirrored right.
@@ -73,15 +75,18 @@ PANEL_GAP = 12
 
 # CameraCfg convention="world": camera +X looks forward and +Z is image up.
 # Offsets below are expressed in the PARENT LINK, not the global world frame.
-# The base_link axes are robot +X forward, +Y left, +Z up. +50 deg about Y
-# tilts the body camera down, 20 degrees below the previous 30-degree view.
-BODY_CAMERA_OFFSET = (0.08, 0.0, 0.85)
-BODY_CAMERA_ROT = (0.9063077870, 0.0, 0.4226182617, 0.0)
+# Raise the body camera 10 cm, move forward to see over HOME grippers, and
+# aim +73 deg down at the nearer table. Only the sensor mount changes.
+BODY_CAMERA_OFFSET = (0.25, 0.0, 0.95)
+BODY_CAMERA_ROT = (0.8038568606, 0.0, 0.5948227868, 0.0)
+BODY_CAMERA_FOCAL_LENGTH = 16.0  # wider tabletop coverage; sensor size unchanged
+WRIST_CAMERA_FOCAL_LENGTH = 18.0
+CAMERA_HORIZONTAL_APERTURE = 24.0
 
 # URDF finger origins extend along wrist LOCAL -Y. Sliders use left -Z/right
-# +Z. Camera forward is local -Y, not robot/world +X. At HOME, left local +X
-# and right local -X point upward. Use those as image-up and mounting offsets
-# so the mirrored wrists do not produce an upside-down right-hand image.
+# +Z. Camera forward is local -Y, not robot/world +X. The image-up/mount axes
+# are left local +X and right local -X. With the new downward HOME these both
+# point toward world -X; retain the existing mirrored physical camera mounts.
 # Quaternion columns map camera [forward, left, up] to these parent-link axes.
 # Tilt 25 degrees down in CAMERA coordinates to include the fingertips. The
 # quaternions are the above axis alignment multiplied by camera Ry(+25 deg).

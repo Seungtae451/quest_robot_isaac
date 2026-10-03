@@ -258,7 +258,7 @@ part of this teleoperation loop.
                 checks[f"step_{steps}"] = {"arm_error_rad": arm_error, "gripper_error": grip_error}
                 if steps == 80:
                     actual = robot.data.body_pos_w[0, ee_ids].cpu().numpy()
-                    reference = np.array([[.42102236, .26728693, .53370183], [.42102386, -.26728430, .53370183]])
+                    reference = np.array([[.4, .18, .57], [.4, -.18, .57]])
                     errors = np.linalg.norm(actual - reference, axis=1)
                     if np.max(errors) > .001:
                         raise AssertionError(f"HOME FK mismatch: {errors}")
@@ -326,6 +326,10 @@ def main(argv=None):
             arguments.error("Recording requires integer camera FPS dividing PHYSICS_HZ (e.g. 30 or 20)")
         if not args.writer_python.is_file():
             arguments.error("Run scripts/setup_recording_env.sh to create the LeRobot writer environment")
+    from config import tabletop_config
+    if tabletop_config.CUBE_SPAWN_REQUIRE_IK:
+        from robot.spawn_workspace import ensure_spawn_pool
+        ensure_spawn_pool()  # separate IK process, before Kit/physics startup
     # Required even in --headless: camera rendering must stay enabled.
     args.enable_cameras = True
     # Keep Kit's supported default fast shutdown after explicitly releasing

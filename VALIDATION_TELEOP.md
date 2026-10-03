@@ -2,6 +2,29 @@
 
 검증일: 2026-10-03 KST. 사용자 workspace의 실제 `env_isaaclab`, Isaac Sim 5.1.0, Isaac Lab git tag v2.3.2, RTX 5080을 사용했습니다. 물리 Quest는 연결하지 않았습니다. WSS controller 입력은 합성 데이터입니다.
 
+## 최신: XYZ 입력과 수직 그리퍼 (2026-10-03 23:45 KST)
+
+현재 운용 모드는 컨트롤러 XYZ와 개폐만 사용하며, 양쪽 EE 방향은 고정된
+수직 아래 목표로 IK를 계산합니다. 아래의 이전 6DoF 결과는 변경 전 기록입니다.
+
+- 전체 회귀 검사 **69 passed**, standalone 양팔 +5cm X / 수직 방향 IK 통과.
+- 새 HOME 손목 `(0.40, ±0.18, 0.57)m`에서 실제 물리 드라이브·열린 그리퍼가
+  안정적으로 유지됨. 낮은 이전 HOME에서는 수직 손가락이 테이블과 충돌했으므로
+  새 HOME과 관절 한계에 여유가 있는 고정 yaw/IK 자세를 사용함.
+- 실제 Isaac + 격리 WSS 18012의 양손 서로 다른 회전 입력으로 팔이 움직이지 않음.
+- XYZ 이동 후 측정 EE의 전체 방향 오차 좌/우 **0.05245 / 0.05274도**.
+  시험 중 손가락 전방 축의 수직 대비 최대 기울기는 **0.7486도**. 모든 IK 목표는
+  정확한 고정 방향이며, 물리 추종과 관절 경로 중간 자세에는 작은 오차가 있음.
+- A 이전 HOME 유지, A 순간 위치 기준, B 정지, A 저장/X 폐기, 느린 HOME 복귀,
+  새 큐브, 다음 에피소드 동일 시작 상태, 저장/초기화 병렬 처리 모두 통과.
+- 135프레임을 공식 LeRobot v3로 저장·재로딩. 팔 14개와 그리퍼 2개의 실제 state와
+  적용 action, RGB 세 스트림 및 task 기록 형식 유지. 기존 수집 데이터는 변경하지 않음.
+
+근거: [검증 JSON](outputs/recording_pipeline_check/20261003_234507/validation.json),
+[공식 LeRobot 재로딩](outputs/recording_pipeline_check/20261003_234507/reload.log),
+[Isaac 로그](outputs/recording_pipeline_check/20261003_234507/isaac.log),
+[Quest 로그](outputs/recording_pipeline_check/20261003_234507/quest.log).
+
 ## 결과
 
 | 검사 | 결과 / 근거 |
@@ -75,3 +98,15 @@
 - 카메라 영상은 실제 RGB임을 확인했지만, task object/collision avoidance/training dataset 작성은 이번 구현 범위가 아닙니다.
 
 재현 명령과 architecture/좌표계 설명은 [README_TELEOP.md](README_TELEOP.md)를 참고하세요.
+
+## 2026-10-04: IK 스폰 제한·가까운 테이블·바디 카메라
+
+- 테이블 중심 X=0.45m, 수직 고정 Pinocchio 100회 IK로 접근·집기·들기·상자에 놓기 경로를 검사한 좌우 각각 130개 후보. `outputs/arm_workspace/ik_spawn_pool.json`, `ik_spawn_coverage.png`, 갱신한 `workspace.html`.
+- 초기 팔의 가림은 후보 제외 조건이 아님. 전체 큐브의 이상적인 카메라 시야와 관절 한계 여유·경로 연속성 검사. 충돌 계획은 포함하지 않음.
+- Body mount `(0.25,0,0.95)`, 아래 73도, focal length 16mm. 실제 GPU RGB 네 배치와 HOME 유지 검사 통과: `outputs/ik_spawn_camera_check/verified_layout/validation.json`.
+- 전체 pytest **74 passed**, compileall 및 git diff --check 통과.
+- 실제 Isaac/Quest WSS/공식 LeRobot 재로드 통합 검사 통과: `outputs/recording_pipeline_check/20261004_012555/validation.json`. 125프레임, 세 영상 병렬 인코딩, A 이전 HOME, 느린 HOME 복귀, 저장/폐기, 새 큐브 두 배치, 동일 시작 상태 검증. 기존 사용자 데이터는 수정하지 않음.
+
+## 2026-10-04: 매 녹화 시작 A 입력 프레임으로 중립 기준 갱신
+
+버튼 이벤트 큐에 해당 프레임의 양손 pose를 함께 보관합니다. 매 READY→A 시작에서 그 pose로 mapper와 필터를 새로 만들고 실제 로봇 위치를 anchor로 사용합니다. 다른 손 위치로 두 번째 A를 누른 뒤 유지해도 HOME이 유지되는 실제 Isaac/합성 Quest WSS/공식 LeRobot 재로드 검사 통과: `outputs/recording_pipeline_check/20261004_030121/validation.json`의 `every_a_press_recaptures_neutral=true`. 139프레임 저장, 시작 상태 일치, 저장·폐기·리셋 검증. 전체 pytest 75 passed. 실제 헤드셋 입력은 이 자동 검사에 포함하지 않습니다.
