@@ -182,8 +182,51 @@ lerobot-train \
 ```
 
 학습 환경에서는 모델/tokenizer 접근 권한과 GPU 메모리에 맞는 설정이
-필요합니다. OpenPI를 직접 사용할 경우에는 그 버전에 맞는 F14 16D
-state/action·세 카메라 데이터 설정을 별도로 준비해야 합니다.
+필요합니다.
+
+### 가져온 OpenPI의 π0.5 입력 확인
+
+`~/stkim_ws/openpi`의 commit `215abfb`는 LeRobot v2.1 및 datasets 3.x를
+사용합니다. 수집한 v3 데이터를 기본 로더에 직접 연결하면 파일 경로와
+Parquet feature metadata가 맞지 않습니다. 이 환경의 기본 TorchCodec도
+FFmpeg shared library 오류를 내므로 확인 도구는 공식 PyAV 디코더를 지정합니다.
+
+OpenPI 환경을 설치한 상태에서 프로젝트 폴더에서 아래 명령으로 확인합니다.
+
+```bash
+../openpi/.venv/bin/python scripts/check_openpi_dataset.py
+```
+
+검사는 CPU에서 실행하며 모델 가중치나 학습을 실행하지 않습니다. 첫 실행에
+실제 작업 설명 토큰화를 위한 공개 PaliGemma tokenizer 약 4MB만
+`outputs/openpi_cache`에 저장합니다. 원본 데이터와 OpenPI 설치 환경은
+변경하지 않으며, 다음 결과를 `outputs/openpi_check/<run>`에 생성합니다.
+
+- `lerobot/local/f14_cube_pickplace`: OpenPI v2.1 로더용 사본. 관절·행동 값은
+  그대로 유지하고, 영상은 재인코딩 없이 복사합니다. 현재 F14 저장기의
+  시연별 MP4 구조를 사용하며, 여러 시연이 공유하는 영상은 별도 분리가 필요합니다.
+- `assets/f14_cube_pickplace/norm_stats.json`: 실제 수집 벡터에서 다시 계산한
+  OpenPI 정규화 통계. `state`와 `actions` 각각 mean/std/q01/q99가 있습니다.
+- `validation.json`: 버전·원본 보존·시연 경계·영상·작업 설명·모델 배치 검사 결과.
+
+F14 매핑은 `dataset/openpi_f14.py`에 있습니다. 팔 관절 14개와 그리퍼 2개를
+현재 순서·부호로 유지하고 **절대 드라이브 목표**로 학습합니다. Aloha의
+14D 관절 변환이나 delta action mask를 적용하지 않습니다. 본체·양 손목
+영상을 모델의 `base_0_rgb`, `left_wrist_0_rgb`, `right_wrist_0_rgb`에 연결하고,
+공식 π0.5 전처리로 224×224 변환·작업 설명과 상태 토큰화·16→32D 패딩을 합니다.
+정규화→패딩→역정규화 후 원래의 16D 행동이 복원되는지도 확인합니다.
+
+2026-10-03 실제 수집 데이터 검증: **2개 시연, 1,184프레임, 30FPS**.
+시연 시작·중간·끝 6곳에서 50프레임 행동 시퀀스가 해당 시연 안에서만
+읽히는 것을 확인했고, 실제 OpenPI 학습 로더가 상태 `[2,32]`, 행동
+`[2,50,32]`, 세 RGB `[2,224,224,3]`, prompt tokens `[2,200]` 배치를
+생성했습니다. 원본 파일의 SHA-256도 검사 전후 모두 같았습니다.
+결과: [validation.json](outputs/openpi_check/20261003_213326/validation.json).
+
+이는 **학습 입력 호환성 검사**입니다. 실제 OpenPI 학습을 시작하려면
+이 F14 data config를 학습 설정에 등록하고 PyAV 지정, π0.5 사전 학습
+checkpoint 경로, batch size 등을 설정해야 합니다. 제공한 검사 명령은
+학습을 시작하거나 checkpoint를 다운로드하지 않습니다.
 
 ## 실패·종료와 테스트
 
