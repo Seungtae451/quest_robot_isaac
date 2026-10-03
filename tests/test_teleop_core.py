@@ -11,7 +11,7 @@ import numpy as np
 import pinocchio as pin
 import pytest
 
-from robot.f14_config import HOME_Q, HOME_ACTION, F14_URDF_PATH
+from robot.f14_config import HOME_Q, HOME_ACTION, F14_URDF_PATH, PROJECT_ROOT, USD_ARM_SIGNS
 from robot.f14_ik import F14IK
 from robot.gripper import closure_to_joints, joints_to_closure, normalize_input
 from teleop.action_protocol import ActionReceiver, ActionSender, pack_action, unpack_action, PACKET_SIZE
@@ -70,9 +70,14 @@ def test_gripper_encoding_independence_and_inverse():
 
 def test_ik_matches_home_and_rejects_unreachable():
     ik = F14IK(F14_URDF_PATH)
-    left, right = ik.forward_kinematics(HOME_Q)
+    # Keep the known FK reference independent of user-editable HOME. Right
+    # dof3/dof4 signs below are expressed in the rev 2.0.1 URDF convention.
+    reference = np.array([-.57, .40, .22, -.95, .24, -.79, -.27,
+                          -.57, -.40, -.22, -.95, -.24, .79, -.27])
+    left, right = ik.forward_kinematics(reference)
     np.testing.assert_allclose(left.translation, [.42102236, .26728693, .53370183], atol=1e-8)
     np.testing.assert_allclose(right.translation, [.42102386, -.26728430, .53370183], atol=1e-8)
+    left, right = ik.forward_kinematics(HOME_Q)
     left.translation[0] += .05
     right.translation[0] += .05
     q, ok = ik.solve(left, right, HOME_Q, max_iter=30, eps=2e-4, dt=.3, damping=1e-4)
@@ -83,7 +88,33 @@ def test_ik_matches_home_and_rejects_unreachable():
     original = q.copy()
     _, ok = ik.solve(left, right, q, max_iter=30)
     assert not ok
+    assert ik.last_diagnostics["iterations"] == 30
+    assert ik.last_diagnostics["position_error_mm"][0] > 1000
     np.testing.assert_array_equal(q, original)
+
+
+def test_rev201_angles_match_existing_usd_kinematics():
+    current = F14IK(F14_URDF_PATH)
+    original = F14IK(PROJECT_ROOT / "assets/f14/F14_URDF_rev_2_0_0/urdf/FlaminGO_14Dof_Arm_Robot_v2_mujoco.urdf")
+    # The axis conversion must preserve every link, including camera mounts
+    # and intermediate arm links, both at HOME and after movement.
+    for q in (HOME_Q, HOME_Q + np.tile([.02, -.01, .03, .02, -.01, .02, .01], 2)):
+        full_new = current.arm_to_full_q(q)
+        full_old = original.arm_to_full_q(q * USD_ARM_SIGNS)
+        pin.forwardKinematics(current.model, current.data, full_new)
+        pin.forwardKinematics(original.model, original.data, full_old)
+        pin.updateFramePlacements(current.model, current.data)
+        pin.updateFramePlacements(original.model, original.data)
+        for frame in current.model.frames:
+            new_id = current.model.getFrameId(frame.name, frame.type)
+            old_id = original.model.getFrameId(frame.name, frame.type)
+            np.testing.assert_allclose(current.data.oMf[new_id].homogeneous,
+                                       original.data.oMf[old_id].homogeneous, atol=1e-12)
+    old_limits = np.column_stack((original.model.lowerPositionLimit[original.arm_q_indices],
+                                 original.model.upperPositionLimit[original.arm_q_indices]))
+    new_limits = np.sort(old_limits * USD_ARM_SIGNS[:, None], axis=1)
+    np.testing.assert_allclose(new_limits[:, 0], current.model.lowerPositionLimit[current.arm_q_indices])
+    np.testing.assert_allclose(new_limits[:, 1], current.model.upperPositionLimit[current.arm_q_indices])
 
 
 def test_protocol_rejects_bad_size_magic_and_nonfinite():

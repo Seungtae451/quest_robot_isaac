@@ -8,12 +8,13 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
 
-from robot.f14_config import ARM_JOINT_NAMES, GRIPPER_JOINT_NAMES, F14_USD_PATH, HOME_ACTION
+from robot.f14_config import ARM_JOINT_NAMES, GRIPPER_JOINT_NAMES, F14_USD_PATH, HOME_ACTION, USD_ARM_SIGNS
 from robot.gripper import closure_to_joints
 from config import teleop_config as cfg
+from simulation.tabletop import spawn_tabletop
 
 
-def create_scene(camera_debug=False):
+def create_scene(camera_debug=False, scene_seed=None):
     if not F14_USD_PATH.is_file():
         raise FileNotFoundError(F14_USD_PATH)
     # Procedural ground avoids an external asset-server dependency during
@@ -22,6 +23,7 @@ def create_scene(camera_debug=False):
         size=(20., 20., .02), collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(.22, .24, .27)))
     ground.func("/World/Ground", ground, translation=(0., 0., -.01))
+    spawn_tabletop(scene_seed)
     light = sim_utils.DomeLightCfg(intensity=3000.)
     light.func("/World/Light", light)
     robot = Articulation(ArticulationCfg(
@@ -35,8 +37,8 @@ def create_scene(camera_debug=False):
         },
     ))
     if camera_debug:
-        # Optional landmarks are diagnostic geometry, not extra cameras. A
-        # future task can add its table/box/target in this same scene function.
+        # Optional landmarks are camera diagnostics, separate from the
+        # collidable tabletop task cube and its collection box.
         for index, color in enumerate(((1., .05, .05), (.05, 1., .05), (.05, .05, 1.))):
             box = sim_utils.CuboidCfg(size=(.07, .07, .07), visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color))
             box.func(f"/World/CameraLandmark{index}", box, translation=(.65, .25 - index * .25, .4))
@@ -59,7 +61,7 @@ def resolve_joint_ids(robot):
 def apply_action(robot, action, arm_ids, gripper_ids):
     # set_joint_position_target updates Isaac Lab's target BUFFER. The actual
     # PhysX drive write happens in write_data_to_sim, before the physics step.
-    arm = torch.as_tensor(action[:14], dtype=torch.float32, device=robot.device).unsqueeze(0)
+    arm = torch.as_tensor(action[:14] * USD_ARM_SIGNS, dtype=torch.float32, device=robot.device).unsqueeze(0)
     fingers = torch.as_tensor(closure_to_joints(*action[14:]), dtype=torch.float32, device=robot.device).unsqueeze(0)
     # USD uses 0.042489517 rather than the rounded semantic 0.0425 m. Respect
     # the actual physical limits, a ~10 micrometre endpoint correction only.
@@ -71,7 +73,7 @@ def apply_action(robot, action, arm_ids, gripper_ids):
 
 def initialize_home(robot, arm_ids, gripper_ids):
     positions = robot.data.default_joint_pos.clone()
-    positions[:, arm_ids] = torch.as_tensor(HOME_ACTION[:14], device=robot.device, dtype=positions.dtype)
+    positions[:, arm_ids] = torch.as_tensor(HOME_ACTION[:14] * USD_ARM_SIGNS, device=robot.device, dtype=positions.dtype)
     fingers = torch.as_tensor(closure_to_joints(0., 0.), device=robot.device, dtype=positions.dtype)
     limits = robot.data.joint_pos_limits[:, gripper_ids]
     positions[:, gripper_ids] = torch.clamp(fingers, min=limits[..., 0], max=limits[..., 1])
@@ -91,4 +93,5 @@ with the same RGB tensors used by the operator view, at the camera timestamp.
     fingers = q[:, gripper_ids].reshape(-1, 2, 2)
     from robot.f14_config import GRIPPER_WIDTH
     closure = (1. - (fingers[..., 1] - fingers[..., 0]) / (2 * GRIPPER_WIDTH)).clamp(0., 1.)
-    return torch.cat((q[:, arm_ids], closure), dim=-1)
+    signs = torch.as_tensor(USD_ARM_SIGNS, dtype=q.dtype, device=q.device)
+    return torch.cat((q[:, arm_ids] * signs, closure), dim=-1)

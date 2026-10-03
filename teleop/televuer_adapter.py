@@ -19,6 +19,7 @@ import time
 import numpy as np
 from televuer import TeleVuerWrapper
 from televuer.televuer import TeleVuer
+from vuer.schemas import MotionControllers
 
 from config import teleop_config as cfg
 from teleop.xr_pose import valid_pose
@@ -65,6 +66,24 @@ def trigger_encoding(requested="auto"):
     raise RuntimeError("Unknown TeleVuer trigger encoding; use --trigger-encoding explicitly")
 
 
+class _ControllerRateSession:
+    """Set the supported MotionControllers fps prop in inherited XR scenes.
+
+    Delegate all other session operations, preserving upstream image handling.
+    This applies equally to immersive, ego, and the read-only measurement mode.
+    """
+    def __init__(self, session):
+        self.session = session
+
+    def __getattr__(self, name):
+        return getattr(self.session, name)
+
+    def upsert(self, element, *args, **kwargs):
+        if isinstance(element, MotionControllers):
+            element.fps = cfg.QUEST_INPUT_HZ
+        return self.session.upsert(element, *args, **kwargs)
+
+
 class FreshTeleVuer(TeleVuer):
     def __init__(self, **kwargs):
         # These must exist BEFORE upstream forks its WebSocket child process.
@@ -73,9 +92,14 @@ class FreshTeleVuer(TeleVuer):
         self.head_time = mp.Value("d", 0.)
         self.controller_serial = mp.Value("Q", 0)
         self.controller_valid = mp.Value("b", False)
+        self.controller_arrivals = mp.Array("d", 1024, lock=False)
+        self.head_arrivals = mp.Array("d", 1024, lock=False)
+        self.head_serial = mp.Value("Q", 0)
+        self.invalid_controller_events = mp.Value("Q", 0)
         super().__init__(**kwargs)
 
     async def on_cam_move(self, event, session, fps=60):
+        arrived = time.monotonic()
         try:
             pose = np.asarray(event.value["camera"]["matrix"]).reshape(4, 4, order="F")
             if not valid_pose(pose):
@@ -85,8 +109,11 @@ class FreshTeleVuer(TeleVuer):
         with self.snapshot_lock:
             await super().on_cam_move(event, session, fps)
             self.head_time.value = time.monotonic()
+            self.head_arrivals[self.head_serial.value % 1024] = arrived
+            self.head_serial.value += 1
 
     async def on_controller_move(self, event, session, fps=60):
+        arrived = time.monotonic()
         valid = True
         try:
             for side in ("left", "right"):
@@ -106,14 +133,17 @@ class FreshTeleVuer(TeleVuer):
             if valid:
                 await super().on_controller_move(event, session, fps)
                 self.controller_time.value = time.monotonic()
+                self.controller_arrivals[self.controller_serial.value % 1024] = arrived
                 self.controller_serial.value += 1
+            else:
+                self.invalid_controller_events.value += 1
 
     async def _until_disconnect(self, stream, session):
         # Vuer 0.0.60 removes ws before the image coroutine's next upsert.
         # That normal disconnect raises an assertion in the installed API.
         # Swallow ONLY that known condition, preserving all genuine failures.
         try:
-            await stream(session)
+            await stream(_ControllerRateSession(session))
         except AssertionError:
             if session.CURRENT_WS_ID in self.vuer.ws:
                 raise
@@ -123,6 +153,9 @@ class FreshTeleVuer(TeleVuer):
 
     async def main_image_monocular_zmq_ego(self, session):
         await self._until_disconnect(super().main_image_monocular_zmq_ego, session)
+
+    async def main_pass_through(self, session):
+        await self._until_disconnect(super().main_pass_through, session)
 
 
 class QuestInterface(TeleVuerWrapper):
@@ -138,6 +171,9 @@ class QuestInterface(TeleVuerWrapper):
         self.use_hand_tracking = False
         self.return_hand_rot_data = False
         self.arm_reference_mode = cfg.ARM_REFERENCE_MODE
+        self._snapshot_key = None
+        self._snapshot_data = None
+        self.last_snapshot_controller_time = 0.
         self.tvuer = FreshTeleVuer(
             use_hand_tracking=False, binocular=False,
             img_shape=(cfg.QUEST_VIEW_HEIGHT, cfg.QUEST_VIEW_WIDTH),
@@ -148,7 +184,12 @@ class QuestInterface(TeleVuerWrapper):
 
     def snapshot(self):
         with self.tvuer.snapshot_lock:
-            data = self.get_tele_data()
+            key = (self.tvuer.controller_serial.value, self.tvuer.head_serial.value)
+            if key != self._snapshot_key:
+                self._snapshot_data = self.get_tele_data()
+                self._snapshot_key = key
+            data = self._snapshot_data
+            self.last_snapshot_controller_time = self.tvuer.controller_time.value
             now = time.monotonic()
             fresh = (self.tvuer.process.is_alive() and data.motion_data_ready
                      and self.tvuer.controller_valid.value
@@ -163,3 +204,15 @@ class QuestInterface(TeleVuerWrapper):
         print(f"Quest URL: https://{host_ip}:{port}/?ws=wss://{host_ip}:{port}&grid=False")
         print(f"Hosted client alternative: https://vuer.ai?ws=wss://{host_ip}:{port}&grid=False")
         print(f"Wrapper reference={self.arm_reference_mode}; +X forward, +Y left, +Z up")
+
+    def input_timing(self, window=5.):
+        from teleop.input_timing import event_timing
+        with self.tvuer.snapshot_lock:
+            now = time.monotonic()
+            controller_times = self.tvuer.controller_arrivals[:]
+            head_times = self.tvuer.head_arrivals[:]
+            counters = {"controller_events": self.tvuer.controller_serial.value,
+                        "head_events": self.tvuer.head_serial.value,
+                        "invalid_controller_events": self.tvuer.invalid_controller_events.value}
+        return {"controller": event_timing(controller_times, now, window),
+                "head": event_timing(head_times, now, window), **counters}

@@ -5,8 +5,8 @@ float64 monotonic timestamp (seconds on this host), 16 float32 actions.
 Actions: left q[7] radians, right q[7] radians, left/right closure [0,1].
 Timestamps reject queued/reordered/replayed packets even across sender restarts.
 
-A tiny read-only F16? query returns F16S + receiver boot timestamp + held action.
-It lets a restarted Quest sender calibrate at the held robot target and lets a
+A read-only F16? query returns F16S + receiver boot timestamp + measured state.
+It lets a restarted Quest sender calibrate at the current robot pose and lets a
 restarted simulator require a new calibration, without commanding a HOME jump.
 It is NOT another action schema or a dataset observation.
 """
@@ -17,10 +17,11 @@ import time
 
 import numpy as np
 
-from config.teleop_config import COMMAND_TIMEOUT
+from config.teleop_config import COMMAND_TIMEOUT, FEEDBACK_HZ
 from robot.f14_config import HOME_ACTION
 
 MAGIC = b"F16A"
+HOLD_MAGIC = b"F16H"  # same packet shape; brake arms while allowing gripper commands
 PACKET_FMT = "!4sId16f"
 PACKET = struct.Struct(PACKET_FMT)
 PACKET_SIZE = PACKET.size
@@ -42,23 +43,24 @@ class ActionPacket:
     sequence: int
     timestamp: float
     action: np.ndarray
+    hold_arms: bool = False
 
 
-def pack_action(action, sequence: int, timestamp: float | None = None) -> bytes:
+def pack_action(action, sequence: int, timestamp: float | None = None, *, hold_arms=False) -> bytes:
     action = validate_action(action)
     timestamp = time.monotonic() if timestamp is None else timestamp
     if not np.isfinite(timestamp) or timestamp < 0:
         raise ValueError("Invalid monotonic timestamp")
-    return PACKET.pack(MAGIC, sequence & 0xffffffff, timestamp, *action)
+    return PACKET.pack(HOLD_MAGIC if hold_arms else MAGIC, sequence & 0xffffffff, timestamp, *action)
 
 
 def unpack_action(payload: bytes) -> ActionPacket:
     if len(payload) != PACKET_SIZE:
         raise ValueError(f"Expected {PACKET_SIZE} bytes, got {len(payload)}")
     magic, sequence, timestamp, *action = PACKET.unpack(payload)
-    if magic != MAGIC or not np.isfinite(timestamp) or timestamp < 0:
+    if magic not in (MAGIC, HOLD_MAGIC) or not np.isfinite(timestamp) or timestamp < 0:
         raise ValueError("Bad action magic or timestamp")
-    return ActionPacket(sequence, timestamp, validate_action(action))
+    return ActionPacket(sequence, timestamp, validate_action(action), magic == HOLD_MAGIC)
 
 
 class ActionReceiver:
@@ -75,6 +77,7 @@ class ActionReceiver:
         self.arm_limits = arm_limits
         self.boot_time = time.monotonic()
         self.action = HOME_ACTION.astype(np.float32).copy()
+        self.feedback_action = self.action.copy()
         self.latest = None
         self.rejected = 0
 
@@ -87,7 +90,7 @@ class ActionReceiver:
                 break
             if payload == QUERY:
                 try:
-                    self.socket.sendto(STATUS.pack(b"F16S", self.boot_time, *self.action), peer)
+                    self.socket.sendto(STATUS.pack(b"F16S", self.boot_time, *self.feedback_action), peer)
                 except OSError:
                     pass
                 continue
@@ -98,7 +101,7 @@ class ActionReceiver:
                     raise ValueError("Stale or future command")
                 if self.latest is not None and packet.timestamp <= self.latest.timestamp:
                     raise ValueError("Out-of-order/duplicate command")
-                if self.arm_limits is not None:
+                if self.arm_limits is not None and not packet.hold_arms:
                     low, high = self.arm_limits[:, 0], self.arm_limits[:, 1]
                     if np.any(packet.action[:14] < low - 1e-5) or np.any(packet.action[:14] > high + 1e-5):
                         raise ValueError("Arm command violates USD joint limits")
@@ -109,6 +112,13 @@ class ActionReceiver:
             self.action = packet.action.copy()
             changed = True
         return changed
+
+    @property
+    def arms_enabled(self) -> bool:
+        return self.state == "ACTIVE" and not self.latest.hold_arms
+
+    def update_feedback(self, measured_action):
+        self.feedback_action = validate_action(measured_action).copy()
 
     @property
     def age(self) -> float:
@@ -123,7 +133,7 @@ class ActionReceiver:
 
 
 class ActionSender:
-    """Send actions and poll simulator-held targets for safe reconnection."""
+    """Send IK goals/arm hold requests and poll the measured robot pose."""
 
     def __init__(self, host: str, port: int):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -139,7 +149,7 @@ class ActionSender:
     def poll_feedback(self) -> bool:
         """Return True only on first connection or a different simulator boot."""
         now = time.monotonic()
-        if now - self.last_query >= 0.1:
+        if now - self.last_query >= 1. / FEEDBACK_HZ:
             self.socket.sendto(QUERY, self.destination)
             self.last_query = now
         restarted = False
@@ -162,12 +172,17 @@ class ActionSender:
         return restarted
 
     @property
+    def measured_state(self):
+        # Keep held_action as a compatibility alias for existing diagnostics.
+        return self.held_action
+
+    @property
     def ready(self) -> bool:
         return self.boot_time is not None and time.monotonic() - self.last_feedback <= COMMAND_TIMEOUT
 
-    def send(self, action):
+    def send(self, action, *, hold_arms=False):
         self.sequence = (self.sequence + 1) & 0xffffffff
-        self.socket.sendto(pack_action(action, self.sequence), self.destination)
+        self.socket.sendto(pack_action(action, self.sequence, hold_arms=hold_arms), self.destination)
 
     def close(self):
         self.socket.close()

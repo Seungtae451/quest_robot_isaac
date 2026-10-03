@@ -1,6 +1,8 @@
 # F14 / FlaminGO — Quest 3 × Isaac Sim teleoperation
 
-두 개의 터미널에서 실행하는 6DoF 양팔 teleoperation입니다. 왼팔 7 + 오른팔 7 + 좌우 gripper 2의 **16D semantic action**과 실제 VLA RGB 카메라 3개를 사용합니다. HOME, 검증된 URDF, canonical USD를 그대로 사용합니다.
+두 개의 터미널에서 실행하는 6DoF 양팔 teleoperation입니다. 왼팔 7 + 오른팔 7 + 좌우 gripper 2의 **16D semantic action**과 실제 VLA RGB 카메라 3개를 사용합니다. HOME은 `robot/f14_config.py`에서 설정합니다.
+
+현재 IK URDF는 `assets/F14_URDF_rev_2_0_1 2/urdf/FlaminGO_14Dof_Arm_Robot_v2.urdf`입니다. action과 HOME은 이 모델의 관절 각도를 사용합니다. 기존 Isaac USD와 축이 반대인 오른팔 dof3/dof4는 시뮬레이터 경계에서 부호를 변환하며, 측정 state와 수신 관절 한계도 같은 기준으로 변환합니다. 따라서 두 관절 HOME의 부호를 바꿔도 실제 시작 자세는 유지됩니다.
 
 ## 실행
 
@@ -36,9 +38,39 @@ https://vuer.ai?ws=wss://<COMPANY_PC_IP>:8012&grid=False
 
 Quest Browser에서 주소를 열고 인증서 신뢰를 처리한 뒤 VR/XR 세션에 들어가세요. **controller mode**입니다. 초기 2초 안정화 후 서로 다른 이벤트에서 45개 pose sample을 모읍니다. 머리와 양손을 가만히 유지하고 trigger를 놓으세요. 움직임이 크면 평균을 버리고 다시 수집합니다.
 
-두 프로세스의 실행 순서는 자유입니다. 둘 다 준비되기 전에는 arm HOME / gripper open을 유지합니다. Quest terminal에서 **`R` + Enter**를 입력하면 현재 유지 중인 로봇 목표를 기준으로 재보정합니다. 재접속과 프로세스 재시작도 자동 재보정합니다. 양쪽 모두 Ctrl+C로 종료합니다.
+두 프로세스의 실행 순서는 자유입니다. 둘 다 준비되기 전에는 arm HOME / gripper open을 유지합니다. Quest terminal에서 **`R` + Enter**를 입력하면 팔을 감속 정지하고 현재 측정된 로봇 자세를 기준으로 재보정합니다. 재접속과 프로세스 재시작도 자동 재보정합니다. 양쪽 모두 Ctrl+C로 종료합니다.
 
 ## 확인한 환경과 의존성
+
+### 손목 축·부호 실험
+
+Isaac을 평소처럼 실행하고, Quest 송신기를 아래 옵션으로 실행합니다. 기존
+회전 매핑을 관찰하며 속도·가속도 제한은 유지합니다. `--no-filter`는 입력
+필터의 지연만 제거합니다.
+
+```bash
+python scripts/run_quest_teleop.py --wrist-axis-test --no-filter
+```
+
+Quest 연결 및 보정 후 터미널 안내에 따라 왼손 비틀기 → 위아래 꺾기 → 좌우
+꺾기, 이어서 오른손 세 동작을 시험합니다. 각 시험은 손과 로봇이 중립에서
+멈춘 뒤 `N` + Enter로 시작하며 12초간 기록합니다. 머리와 반대 손을 고정하고
+한 방향으로 10~15도 천천히 회전 → 1~2초 유지 → 중립 → 반대 방향 → 유지 →
+중립으로 돌아옵니다. 처음 움직인 물리적 방향을 메모하세요. 다음 시험도
+`N` + Enter로 시작합니다. 추적 끊김·재보정으로 중단된 시험은 재시도합니다.
+
+`WORLD[X,Y,Z]deg`의 controller / target / measured는 각 시험 시작 대비 회전
+벡터입니다. 공통 축은 X 앞, Y 왼쪽, Z 위이고 부호는 오른손 법칙입니다.
+`HAND[twist,bend,sideways]deg`의 controller / target으로 손목 회전축 대응을
+비교합니다. 실제 measured에는 관절 추종 지연 및 IK 실패 영향이 있습니다. WORLD 벡터는 손목의 초기 방향이 서로 달라 같을 필요가 없습니다.
+로컬 링크 축 벡터도 JSON에 저장합니다. measured는 Isaac 관절 feedback의 URDF FK이며 최대 60Hz로
+갱신됩니다. 손이 먼저 움직인 순간의 지연과 축 불일치를 혼동하지 말고 끝에서
+잠시 유지한 기록도 비교하세요. `IK FAIL`이면 목표와 실제가 달라지는 것이
+회전 매핑 오류만을 뜻하지 않습니다.
+
+결과는 `outputs/wrist_axis_check/<시각>/summary.json`과 시험별 JSON에
+저장됩니다. 자동으로 축이나 부호를 수정하지 않습니다. 실제 Quest의 여섯
+동작을 수행해야 실기 결과가 생깁니다.
 
 | 항목 | 로컬에서 확인한 값 |
 |---|---|
@@ -87,6 +119,7 @@ TeleVuer는 내부적으로 WebSocket child process와 shared-memory image write
 | `config/teleop_config.py` | rate, filter, timeout, camera offset/gain |
 | `robot/f14_config.py` | HOME, joint 이름, 원본 asset 경로 |
 | `robot/f14_ik.py` | 기존 LOCAL DLS 알고리즘, arm-only Jacobian |
+| `robot/joint_motion.py` | IK 목적지까지 관절 속도·가속도를 제한하는 연속 drive reference |
 | `robot/f14_ik_legacy.py` | 수정 전 solver 백업 |
 | `robot/gripper.py` | trigger 정규화, scalar↔finger mapping |
 | `teleop/quest_teleop_server.py` | Quest main loop와 calibration UX |
@@ -94,7 +127,8 @@ TeleVuer는 내부적으로 WebSocket child process와 shared-memory image write
 | `teleop/xr_pose.py` | SE(3) calibration, 1:1 mapping, SO(3) filter |
 | `teleop/action_protocol.py` | 공통 16D UDP packing/validation, 상태 조회 |
 | `teleop/xr_video.py` | JPEG/ZMQ worker와 XR BGR adapter |
-| `simulation/f14_scene.py` | USD spawn, name lookup, HOME, measured state |
+| `simulation/f14_scene.py` | USD spawn, tabletop scene, name lookup, HOME, measured state |
+| `simulation/tabletop.py`, `config/tabletop_config.py` | 열린 상자, 물리 큐브, 랜덤 배치와 생성 금지 구역 |
 | `simulation/cameras.py` | 실제 센서 3개, raw observation, snapshot |
 | `simulation/quest_view_compositor.py` | BODY 중앙 크게, 좌우 WRIST 작게 |
 | `simulation/isaac_teleop_app.py` | physics/camera loop, recorder callback |
@@ -110,15 +144,20 @@ action_16 = [*left_arm_q_7, *right_arm_q_7, left_closure, right_closure]
 # 0:7 left radians / 7:14 right radians / 14:16 [0=open, 1=closed]
 ```
 
-UDP `!4sId16f`, 정확히 **80 bytes**: `F16A`, uint32 sequence, float64 timestamp, float32 16개. timestamp는 동일 Linux host의 `time.monotonic()` 초입니다. Wall-clock 조정 영향을 받지 않으며, **다른 PC로 action UDP를 옮길 때는 clock/schema 재설계가 필요**합니다. 외부 LAN에 action/video 포트를 열지 않습니다.
+UDP `!4sId16f`, 정확히 **80 bytes**: `F16A`, uint32 sequence, float64 timestamp, float32 16개. `F16A`의 팔 각도는 최종 IK 목적지이며, PhysX에 바로 적용하지 않습니다. 같은 크기의 `F16H` packet은 IK 실패/보정 중 팔 감속 정지를 요청하고 gripper 입력은 독립적으로 적용합니다. timestamp는 동일 Linux host의 `time.monotonic()` 초입니다. Wall-clock 조정 영향을 받지 않으며, **다른 PC로 action UDP를 옮길 때는 clock/schema 재설계가 필요**합니다. 외부 LAN에 action/video 포트를 열지 않습니다.
 
 receiver는 길이, magic, finite 값, gripper 범위, USD arm limits, 시간 순서와 0.5초 freshness를 검사합니다. 잘못된 packet은 watchdog을 갱신하지 않습니다. 수신 queue를 비워 가장 최신 유효 packet만 적용합니다. sequence가 0으로 돌아가는 sender 재시작도 monotonic timestamp로 처리합니다.
 
 - `WAITING`: 아직 유효 명령 없음 → HOME / open.
-- `ACTIVE`: 유효한 최근 명령 → position drive target.
-- `HOLD`: 마지막 명령이 0.5초보다 오래됨 → **마지막 유효 target 유지**.
+- `ACTIVE` + `F16A`: 유효한 최근 IK 목적지까지 속도·가속도를 제한하며 이동.
+- `ACTIVE` + `F16H`: 팔을 감속 정지하고 정지한 drive reference 유지. gripper는 계속 사용 가능.
+- `HOLD`: 마지막 명령이 0.5초보다 오래됨 → 오래된 목적지를 계속 쫓지 않고 감속 정지.
 
-읽기 전용 `F16?` 요청에 수신기가 `F16S + boot monotonic time + held action`을 돌려줍니다. 이 작은 handshake는 dataset action과 별개입니다. 송신기 재시작은 held target에서 재보정하고, 시뮬레이터 재시작은 새로운 boot를 감지해 HOME에서 다시 보정합니다. tracking 상실·receiver 응답 상실·보정 중에는 action 송신을 중단합니다.
+읽기 전용 `F16?` 요청에 수신기가 `F16S + boot monotonic time + measured state`를 돌려줍니다. 아직 도달하지 않은 IK 목적지가 아니라 실제 측정된 관절/그리퍼 자세입니다. IK 초기값과 재보정 anchor도 이 측정값을 사용합니다. 송신기 재시작은 현재 자세에서 재보정하고, 시뮬레이터 재시작은 새로운 boot를 감지해 HOME에서 다시 보정합니다. tracking 상실·receiver 응답 상실 때는 action 송신을 중단하며, 보정 중에는 `F16H`로 정지시킵니다.
+
+Isaac는 매 physics step(60Hz)에서 연속 관절 목표를 생성합니다. 기본 목표 속도 **0.25rad/s ≈ 14.3°/s**, 목표 가속도 **0.50rad/s² ≈ 28.6°/s²**이며 `config/teleop_config.py`의 `ARM_MAX_VELOCITY`, `ARM_MAX_ACCELERATION`에서 조절합니다. 기존 PhysX 팔 drive gain과 solver 속도 한계는 유지합니다. 같은 낮은 속도를 PhysX hard limit으로도 강제하면 설치된 모델의 강한 drive와 충돌해 정지 자세에서도 solver가 불안정해졌으므로, 연속 drive reference로 느린 이동을 제어합니다. 새 IK 해가 멀리 있거나 다른 branch여도 경로의 위치·속도를 초기화하지 않습니다. `--no-filter`도 이 제한을 해제하지 않습니다.
+
+팔이 충돌 등으로 목표를 따라가지 못해 reference와 측정 관절의 차이가 `ARM_MAX_TRACKING_ERROR=0.05rad`를 넘으면 해당 관절 reference를 감속시켜 목표가 계속 멀어지는 것을 막습니다. 속도 제한은 손끝의 직선 속도 제한이나 충돌 회피 계획을 뜻하지 않습니다. 시뮬레이터 초기 HOME 설정 때만 joint state를 쓰며, 운용 중에는 drive target으로 이동합니다.
 
 ## Pose / IK
 
@@ -130,13 +169,28 @@ R_rel = R_controller_neutral.T @ R_controller_now
 R_target = R_robot_anchor @ B @ R_rel @ B.T
 ```
 
-초기 anchor=HOME FK, 재보정 anchor=마지막 유효 robot target의 FK. `B=CONTROLLER_TO_EE_ROT`, 기본 identity. 위치·회전 gain은 1입니다. 위치 5mm neutral deadband 외에 최대 이동량·회전각 clamp가 없습니다. deadband 밖의 값은 threshold를 빼지 않고 그대로 사용합니다. SO(3) filtering은 `R_f @ exp3(alpha * log3(R_f.T @ R_new))`입니다. `--no-filter`는 위치·회전·gripper low-pass를 끄며 neutral deadband는 유지합니다.
+anchor는 보정 시 실제 측정한 로봇 자세의 FK입니다. `B`는 양손별
+`LEFT_CONTROLLER_TO_EE_ROT` / `RIGHT_CONTROLLER_TO_EE_ROT`이며 컨트롤러
+로컬 X(비틀기), Y(위아래 꺾기), Z(좌우 꺾기)를 그리퍼 손목 축에 대응합니다.
+현재 운용 solver는 **전체 6DoF IK**입니다. 회전 목표를 구현할 때 5~7번
+관절만 직접 지정하는 방식은 아니며 모든 팔 관절이 함께 사용될 수 있습니다.
 
-IK는 검증된 `_mujoco.urdf`와 `left_dof7_link`, `right_dof7_link`, LOCAL Jacobian DLS를 사용합니다. 4개 finger column을 명시적으로 제외했습니다. 30 iteration, `eps=2e-4`, `dt=.3`, damping `1e-4`. **수렴 실패 시 partial q를 사용하지 않고 마지막 유효 양팔 q를 유지**합니다. trigger는 독립적으로 계속 사용할 수 있습니다. 경계 밖 target도 축소하지 않으므로 로그의 desired translation은 1:1입니다.
+위치·회전 gain은 1이고 위치에는 5mm neutral deadband가 있습니다. 최대
+이동량이나 회전량으로 목표를 축소하지 않습니다. 새 controller event만
+처리하고, SO(3) 및 위치·그리퍼 필터 계수는 실제 처리 간격에 따라 보정해
+기존 30Hz의 응답 시간을 유지합니다. `--no-filter`는 입력 필터만 끄며
+관절 속도·가속도 제한은 유지합니다. `--position-only`는 EE 방향을 보정
+방향에 고정합니다 (orientation 조건 자체를 제거하는 옵션은 아닙니다).
+
+rev 2.0.1 URDF, `left/right_dof7_link`의 LOCAL Jacobian DLS를 사용합니다.
+현재 최대 100 iteration, `eps=2e-4`, `dt=.3`, damping `1e-4`입니다.
+**실패 시 partial q를 보내지 않고 `F16H`로 양팔을 감속 정지**합니다.
+실패 로그의 `posErrL/R_mm`, `rotErrL/R_deg`, `nearLimits`, `iter`로
+팔별 잔차와 관절 한계를 구분합니다. trigger는 독립적으로 사용할 수 있습니다.
 
 ## Gripper
 
-설치된 wrapper trigger는 `10=released, 0=fully pressed`. source를 한 번 검사하여 encoding을 선택하고 `closure=1-raw/10`으로 변환합니다. 값이 1.5보다 작은 순간 encoding을 바꾸는 방식은 사용하지 않습니다. 완전히 누른 legacy 값 0과 standard released 값 0을 구별할 수 없기 때문입니다. `--trigger-encoding standard|legacy-inverted-10`으로 다른 wrapper를 명시할 수도 있습니다. squeeze는 기본 0→1입니다.
+wrapper source를 한 번 검사하여 trigger encoding을 선택한 뒤, 실제 Quest 입력 방향에 맞게 trigger closure를 반전합니다. 따라서 trigger를 놓으면 gripper가 열리고 누르면 닫힙니다. `--trigger-encoding standard|legacy-inverted-10`으로 다른 wrapper를 명시할 수도 있습니다. squeeze는 기본 0→1이며 반전하지 않습니다.
 
 ```python
 opening = 0.0425 * (1 - closure)
@@ -148,15 +202,31 @@ finger_targets = [-opening_left, +opening_left,
 
 ## 카메라와 dataset interface
 
+현재 장면은 60×80cm 테이블(상판 높이 30cm), 테이블 중앙의 열린 수집 상자(외부 18×18×8cm), 밝은 빨간색 3cm 큐브 1개를 포함합니다. 상자는 바닥과 네 벽에 충돌이 있고 윗면이 열려 있습니다. 큐브는 20g rigid body로 중력·충돌·마찰이 적용되어 테이블 위에 놓이거나 상자 안에 담길 수 있습니다.
+
+큐브는 Isaac 시작 시 매번 다른 위치와 yaw로 생성됩니다. 상자 양쪽 경계에서 2cm 이상 떨어진 **왼쪽(+Y) 또는 오른쪽(-Y) 구역**에서 생성합니다. 상자가 있는 중앙 띠에는 생성하지 않고, 몸통 쪽 테이블 끝을 기준으로 길이의 **1/4~2/3 구간**만 사용합니다. 가까운 첫 1/4과 먼 쪽 마지막 1/3에는 생성하지 않습니다. 회전한 큐브의 모서리까지 금지 구역과 테이블 가장자리를 침범하지 않게 배치합니다. 물리 동작 중 사용자가 왼쪽 구역으로 옮기는 것은 가능합니다.
+
+배치·상자 크기·큐브 수/크기/색상은 `config/tabletop_config.py`에서 수정합니다. `CUBE_COUNT`를 늘리면 초기 큐브끼리 겹치지 않게 배치합니다. 같은 배치를 재현하려면 Isaac 실행 명령에 `--scene-seed 42`를 추가하세요. 기존 `--camera-debug` 색상 큐브는 별도의 시야 확인용입니다.
+
+```bash
+# 테이블 지지·상자 바닥/벽 충돌·실제 RGB를 검사하고 종료
+python scripts/test_tabletop.py --headless --device cuda:0
+# 결과: outputs/tabletop_check/validation.json 및 PNG
+
+# 큰 IK 목표·실패 후 재개·통신 timeout의 연속 이동 검사
+python scripts/test_joint_motion.py --headless --device cuda:0
+# 결과: outputs/joint_motion_check/validation.json, samples.json
+```
+
 `CameraCfg.OffsetCfg(convention="world")`의 camera 축은 forward=+X, up=+Z입니다. 아래 offset은 **parent link 좌표**, quaternion은 **wxyz**입니다.
 
 | observation 이름 | parent | 해상도 | offset (m) | rotation wxyz |
 |---|---|---|---|---|
-| front / BODY | base_link | 640×480 | (.08, 0, .85) | (.965926, 0, .258819, 0) |
+| front / BODY | base_link | 640×480 | (.08, 0, .85) | (.906308, 0, .422618, 0) |
 | left_wrist | left_dof7_link | 320×240 | (.055, -.03, 0) | (.379928, -.379928, .596368, -.596368) |
 | right_wrist | right_dof7_link | 320×240 | (-.055, -.03, 0) | (.596368, .596368, -.379928, -.379928) |
 
-Body는 전방 아래 30도, wrist는 link의 -Y 집기 방향을 기준으로 camera 아래 25도입니다. 좌우 link가 mirror이므로 영상의 위쪽 방향도 각각 local +X/-X로 맞췄습니다. offset은 config에서 조정합니다. 실제 rigid link를 이름으로 찾아 그 아래 camera prim을 생성하므로 import directory나 joint numeric ordering에 의존하지 않습니다.
+Body는 전방 아래 50도(기존보다 20도 아래), wrist는 link의 -Y 집기 방향을 기준으로 camera 아래 25도입니다. 좌우 link가 mirror이므로 영상의 위쪽 방향도 각각 local +X/-X로 맞췄습니다. offset은 config에서 조정합니다. 실제 rigid link를 이름으로 찾아 그 아래 camera prim을 생성하므로 import directory나 joint numeric ordering에 의존하지 않습니다.
 
 세 센서의 `camera.data.output["rgb"]`를 그대로 유지합니다. raw는 `(1,H,W,3)` uint8 tensor이며 robot state는 `(1,16)`입니다. operator 변환 때만 batch index를 선택하고 CPU로 복사합니다. dataset callback은 아래 구조를 받습니다.
 
@@ -171,11 +241,11 @@ Body는 전방 아래 30도, wrist는 link의 -Y 집기 방향을 기준으로 c
 # callback(observation, commanded_action_16, simulation_time_seconds)
 ```
 
-callback이 다음 frame 이후에도 데이터를 보관하려면 tensor를 clone해야 합니다. 센서 버퍼는 재사용됩니다. 현재 gripper state는 command가 아니라 실제 두 finger 위치로부터 평균 opening을 계산합니다. callback에서는 오래 걸리는 I/O를 하지 마세요. training/LeRobot 저장 pipeline은 이번 범위에 포함하지 않습니다.
+callback의 `commanded_action_16`은 최종 IK 목적지가 아니라 그 시점에 실제 적용한 속도 제한 drive reference입니다. `observation.state`는 실제 측정값입니다. callback이 다음 frame 이후에도 데이터를 보관하려면 tensor를 clone해야 합니다. 센서 버퍼는 재사용됩니다. 현재 gripper state는 command가 아니라 실제 두 finger 위치로부터 평균 opening을 계산합니다. callback에서는 오래 걸리는 I/O를 하지 마세요. training/LeRobot 저장 pipeline은 이번 범위에 포함하지 않습니다.
 
 Display composite는 1280×720, BODY가 가용 폭의 64%, 좌우 각각 18%, aspect-ratio 유지입니다. resize와 label은 새 canvas에만 적용합니다. JPEG quality=80, PUB/SUB 단일 메시지, CONFLATE, pending frame 1개, nonblocking send를 사용합니다. JPEG encoder는 Isaac main loop 밖 thread에서 실행하며 socket도 해당 thread가 소유합니다. SUB는 최신 frame 하나만 decode합니다. 영상이 1초 이상 stale이면 Quest에 안내 이미지를 표시하고 자동 재연결을 기다립니다. `render_to_xr`가 **BGR을 입력받아 내부에서 RGB로 변환**하는 설치 버전의 동작을 adapter에 명시했습니다.
 
-기본 physics/control/camera는 60/30/30Hz입니다. rendering과 GPU→CPU 복사는 camera 주기에만 합니다. 처리시간이 길어지면 실제 Hz는 낮아지며 오래된 frame을 따라잡기 위해 재생하지 않습니다. 이 PC의 측정값은 검증 결과 문서를 참고하세요.
+기본 physics/control/camera는 60/60/30Hz입니다. `QUEST_INPUT_HZ=60`은 브라우저에 요청하는 controller 스트림 주기이고 실제 수신 주기는 따로 측정합니다. `FEEDBACK_HZ=60`으로 실제 관절 피드백을 조회합니다. rendering과 GPU→CPU 복사는 camera 주기에만 합니다. 처리시간이 길어지면 실제 Hz는 낮아지며 오래된 frame을 따라잡기 위해 재생하지 않습니다. 입력 주기와 최적화 측정값은 [QUEST_INPUT_CHECK.md](QUEST_INPUT_CHECK.md)를 참고하세요.
 
 ## SSL / LAN
 
@@ -245,7 +315,7 @@ python scripts/test_udp_action.py --send --left-gripper 1 --right-gripper 0 --se
 Quest hardware acceptance는 다음을 확인하세요.
 
 1. calibration 후 머리를 고정하고 한 controller를 +10cm/+20cm 이동: `--verbose --no-filter`의 `rawL/rawR`, `Lxyz/Rxyz`가 .10/.20m. `IK FAIL`인 범위에서도 목표를 축소하지 않음.
-2. 한 축 30도 회전: `Lrot/Rrot` 약 30도, 실제 EE 방향 일치. 축 보정이 필요한 경우에만 `CONTROLLER_TO_EE_ROT`를 변경. 임의 angle gain/clamp 금지.
+2. 한 축 30도 회전: `Lrot/Rrot` 약 30도, 실제 EE 방향 일치. 추가 축 보정이 필요한 경우 양손별 `LEFT_CONTROLLER_TO_EE_ROT` / `RIGHT_CONTROLLER_TO_EE_ROT`를 확인. 임의 angle gain/clamp 금지.
 3. trigger release=open / press=closed. 좌우가 독립. `--gripper-input squeeze`도 확인.
 4. BODY 중앙 크게, 양쪽 WRIST 작게. 손목 이동에 맞춰 raw camera와 Quest 시야가 동일하게 움직임.
 5. controller sleep/브라우저 종료 → tracking timeout → Isaac HOLD. 다시 연결 → 현재 held pose 기준 재보정.
@@ -255,6 +325,6 @@ Quest hardware acceptance는 다음을 확인하세요.
 
 ## 구현 범위와 남은 실기 확인
 
-기존 HOME/asset/IK 수치 기준을 보존한 control, camera, video IPC와 dataset 연결 지점이 구현되어 있습니다. collision avoidance나 실제 로봇 torque safety, task scene/training pipeline은 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
+control, camera, video IPC, dataset 연결 지점과 큐브를 상자에 담는 tabletop 장면이 구현되어 있습니다. collision avoidance나 실제 로봇 torque safety, training pipeline은 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
 
 설치 버전에 특유한 카메라 Fabric 초기 pose 동기화와 STOP callback을 코드에 설명했습니다. 원본 package를 수정하지 않고 앱 초기화/종료 순서에서 처리합니다. Quest 착용 상태의 회전축 감각, LAN 인증서 신뢰, headset browser XR 진입, 실제 controller tracking loss, 사용자에게 편한 wrist 시야는 현장 확인이 필요합니다. 자세한 자동 실행 결과는 `VALIDATION_TELEOP.md`에 기록합니다.

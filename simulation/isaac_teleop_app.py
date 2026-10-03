@@ -14,8 +14,9 @@ import traceback
 import numpy as np
 
 from config import teleop_config as cfg
-from robot.f14_config import HOME_ACTION, EE_BODY_NAMES
+from robot.f14_config import HOME_ACTION, EE_BODY_NAMES, USD_ARM_SIGNS
 from teleop.action_protocol import ActionReceiver
+from robot.joint_motion import JointMotionLimiter
 
 
 def parser():
@@ -26,6 +27,7 @@ def parser():
     result.add_argument("--steps", type=int, default=0, help="Exit after N physics steps; 0 runs continuously")
     result.add_argument("--snapshot-dir", type=Path, help="Save raw RGB and display PNGs for camera alignment")
     result.add_argument("--camera-debug", action="store_true", help="Add colored landmarks and update camera poses")
+    result.add_argument("--scene-seed", type=int, help="Repeat a tabletop cube layout; omitted means fresh random placement")
     result.add_argument("--smoke-test", action="store_true", help="360-step HOME/finger/wrist/camera validation, no UDP actuation")
     return result
 
@@ -49,7 +51,7 @@ part of this teleoperation loop.
     receiver = publisher = None
     cameras = {}
     try:
-        robot = create_scene(args.camera_debug)
+        robot = create_scene(args.camera_debug, args.scene_seed)
         cameras = create_cameras(args.camera_fps, args.camera_debug or args.smoke_test)
         sim.reset()
         # Lab 2.3.2's camera XformPrimView lazily seeds Fabric transforms from
@@ -66,10 +68,17 @@ part of this teleoperation loop.
             raise RuntimeError(f"EE lookup failed: {ee_names}")
         initialize_home(robot, arm_ids, finger_ids)
         limits = robot.data.joint_pos_limits[0, arm_ids].cpu().numpy()
+        limits = np.sort(limits * USD_ARM_SIGNS[:, None], axis=1)
         receiver = ActionReceiver(cfg.ACTION_UDP_HOST, args.action_port, limits)
+        measured_state = semantic_state(robot, arm_ids, finger_ids)
+        measured_action = measured_state[0].cpu().numpy()
+        receiver.update_feedback(measured_action)
+        motion = JointMotionLimiter(measured_action[:14], cfg.ARM_MAX_VELOCITY,
+                                    cfg.ARM_MAX_ACCELERATION, cfg.ARM_MAX_TRACKING_ERROR)
         publisher = VideoPublisher(args.video_endpoint)
         print(f"F14 ready: UDP {cfg.ACTION_UDP_HOST}:{args.action_port}; video PUB {args.video_endpoint}")
         print("HOME arms, both grippers OPEN. UDP WAITING until calibrated Quest action arrives.")
+        print(f"Arm motion limits: speed={cfg.ARM_MAX_VELOCITY} rad/s, acceleration={cfg.ARM_MAX_ACCELERATION} rad/s^2")
         dt = sim.get_physics_dt()
         frame_dt = 1. / args.camera_fps
         frame_accumulator = 0.
@@ -84,23 +93,33 @@ part of this teleoperation loop.
             loop_start = time.monotonic()
             if args.smoke_test:
                 # Independent gripper phases also catch a left/right swap.
-                action = HOME_ACTION.copy()
+                goal = HOME_ACTION.copy()
                 if 90 <= steps < 180:
-                    action[14] = 1.
+                    goal[14] = 1.
                 elif 180 <= steps < 270:
-                    action[15] = 1.
+                    goal[15] = 1.
                 elif steps >= 270:
-                    action[0] += .08
-                    action[7] += .08
+                    goal[0] += .08
+                    goal[7] += .08
+                arms_enabled = True
             else:
                 receiver.poll()
-                action = receiver.action
+                goal = receiver.action
+                arms_enabled = receiver.arms_enabled
+            # The UDP action is only the IK destination. A continuous drive
+            # reference advances from measured startup joints on EVERY physics
+            # step. New goals/IK recovery never reset reference or velocity.
+            action = goal.copy()
+            action[:14] = motion.step(goal[:14], measured_action[:14], dt, arms_enabled)
             apply_action(robot, action, arm_ids, finger_ids)
             robot.write_data_to_sim()
             # Physics is 60 Hz. Rendering and GPU->CPU camera copies are only
             # scheduled at camera rate; a delayed loop never plays catch-up.
             sim.step(render=False)
             robot.update(dt)
+            measured_state = semantic_state(robot, arm_ids, finger_ids)
+            measured_action = measured_state[0].cpu().numpy()
+            receiver.update_feedback(measured_action)
             steps += 1
             frame_accumulator += dt
             for camera in cameras.values():
@@ -109,12 +128,11 @@ part of this teleoperation loop.
                 frame_accumulator %= frame_dt
                 sim.render()
                 captured = time.monotonic()
-                state = semantic_state(robot, arm_ids, finger_ids)
-                observation = raw_observation(cameras, state)
+                observation = raw_observation(cameras, measured_state)
                 if observation_callback:
                     observation_callback(observation, action.copy(), steps * dt)
                 images = display_rgb_copies(observation)
-                status = f"UDP {receiver.state} seq={receiver.latest.sequence if receiver.latest else 0} age={receiver.age:.2f}s"
+                status = f"UDP {receiver.state} ARM {'FOLLOW' if arms_enabled else 'BRAKE/HOLD'} seq={receiver.latest.sequence if receiver.latest else 0}"
                 composite = compose_quest_view(images, status)
                 publisher.submit(composite, captured)
                 frame_count += 1
@@ -168,6 +186,7 @@ part of this teleoperation loop.
             if now - last_log >= cfg.LOG_INTERVAL:
                 print(f"UDP {receiver.state} seq={receiver.latest.sequence if receiver.latest else 0} age={receiver.age:.3f}s "
                       f"qL0={action[0]:+.3f} qR0={action[7]:+.3f} grip={action[14:].round(2)} "
+                      f"arm={'FOLLOW' if arms_enabled else 'BRAKE/HOLD'} lag_limit={bool(motion.tracking_limited.any())} "
                       f"camera={frame_count / (now-last_log):.1f}fps PUB={'ERROR: '+publisher.error if publisher.error else 'RUNNING'} "
                       f"rejected={receiver.rejected}")
                 last_log, frame_count = now, 0

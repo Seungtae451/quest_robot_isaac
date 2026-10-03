@@ -4,7 +4,10 @@ Distances are metres, angles radians, and quaternions are (w, x, y, z).
 Neither process imports the other's runtime through this configuration module.
 """
 
-CONTROL_HZ = 30.0
+CONTROL_HZ = 60.0  # consume newest Quest events, at most once per tick
+QUEST_INPUT_HZ = 60.0  # requested browser controller stream rate (measured separately)
+FEEDBACK_HZ = 60.0  # measured Isaac joints for the IK seed
+FILTER_REFERENCE_HZ = 30.0  # preserve existing smoothing in seconds
 PHYSICS_HZ = 60.0
 CAMERA_FPS = 30.0
 
@@ -17,6 +20,12 @@ POSITION_FILTER_ALPHA = 0.2
 ROTATION_FILTER_ALPHA = 0.2
 GRIPPER_FILTER_ALPHA = 0.3
 CONTROLLER_TO_EE_ROT = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.))
+# Map controller LOCAL [twist X, bend Y, sideways Z] to each wrist link.
+# The hand frame is [forward, left, up]: forward is link -Y for both arms,
+# left/up are link -Z/+X on the left, and +Z/-X on the mirrored right.
+# Columns are those three hand axes expressed in the corresponding EE link.
+LEFT_CONTROLLER_TO_EE_ROT = ((0., 0., 1.), (-1., 0., 0.), (0., -1., 0.))
+RIGHT_CONTROLLER_TO_EE_ROT = ((0., 0., -1.), (-1., 0., 0.), (0., 1., 0.))
 
 # This matches the inspected installed wrapper's default. Its positions are
 # relative to the head, with head yaw removed, then shifted to a waist origin.
@@ -26,10 +35,16 @@ CALIBRATION_SETTLE_SECONDS = 2.0
 CALIBRATION_SAMPLES = 45
 CALIBRATION_POSITION_TOLERANCE = 0.015
 CALIBRATION_ROTATION_TOLERANCE = 0.10
-IK_MAX_ITER = 30
+IK_MAX_ITER = 100
 IK_EPS = 2e-4
 IK_DT = 0.3
 IK_DAMPING = 1e-4
+
+# IK produces a destination, never an instantaneous drive target. These limits
+# are always enforced by the Isaac receiver, including with --no-filter.
+ARM_MAX_VELOCITY = 0.25  # rad/s (~14.3 deg/s)
+ARM_MAX_ACCELERATION = 0.50  # rad/s^2 (~28.6 deg/s^2)
+ARM_MAX_TRACKING_ERROR = 0.05  # rad; brake if a drive cannot follow its reference
 
 # The canonical USD's finger drives are only ~2.3-2.8 N/m and cannot hold the
 # ~0.1 kg fingers against gravity: a real GPU test drifted to half closure.
@@ -55,10 +70,10 @@ PANEL_GAP = 12
 
 # CameraCfg convention="world": camera +X looks forward and +Z is image up.
 # Offsets below are expressed in the PARENT LINK, not the global world frame.
-# The base_link axes are robot +X forward, +Y left, +Z up. +30 deg about Y
-# tilts the body camera down toward the workspace at x ~= 0.5, z ~= 0.5.
+# The base_link axes are robot +X forward, +Y left, +Z up. +50 deg about Y
+# tilts the body camera down, 20 degrees below the previous 30-degree view.
 BODY_CAMERA_OFFSET = (0.08, 0.0, 0.85)
-BODY_CAMERA_ROT = (0.9659258263, 0.0, 0.2588190451, 0.0)
+BODY_CAMERA_ROT = (0.9063077870, 0.0, 0.4226182617, 0.0)
 
 # URDF finger origins extend along wrist LOCAL -Y. Sliders use left -Z/right
 # +Z. Camera forward is local -Y, not robot/world +X. At HOME, left local +X

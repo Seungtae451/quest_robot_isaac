@@ -8,6 +8,7 @@ import numpy as np
 import pinocchio as pin
 
 from config import teleop_config as cfg
+from teleop.input_timing import timed_filter_alpha
 
 
 def valid_pose(pose) -> bool:
@@ -44,35 +45,44 @@ def samples_are_still(samples) -> bool:
 class RelativePoseMapper:
     """One arm's controller neutral pose maps to its robot anchor pose.
 
-The initial anchor is HOME. Recalibration anchors at the last commanded robot
-pose, so pressing R or reconnecting cannot snap the robot back to HOME.
-"""
-    def __init__(self, controller_start, robot_anchor, use_filter=True):
+    Recalibration anchors at the measured robot pose. Rotation stays wrist-local:
+    controller twist/bend axes map to the mirrored F14 hand frames, not world axes.
+    """
+    def __init__(self, controller_start, robot_anchor, use_filter=True, *, side=None):
         self.start = controller_start.copy()
         self.anchor = robot_anchor.copy()
         self.alpha_p = cfg.POSITION_FILTER_ALPHA if use_filter else 1.
         self.alpha_r = cfg.ROTATION_FILTER_ALPHA if use_filter else 1.
-        self.basis = np.asarray(cfg.CONTROLLER_TO_EE_ROT)
-        if not np.allclose(self.basis.T @ self.basis, np.eye(3)) or not np.isclose(np.linalg.det(self.basis), 1.):
-            raise ValueError("CONTROLLER_TO_EE_ROT must be a proper rotation")
+        if side not in (None, "left", "right"):
+            raise ValueError("Expected left or right arm")
+        # Generic callers retain their configurable basis; teleoperation always
+        # identifies its arm and uses the matching physical hand axes.
+        basis = cfg.CONTROLLER_TO_EE_ROT if side is None else getattr(cfg, f"{side.upper()}_CONTROLLER_TO_EE_ROT")
+        self.basis = np.asarray(basis, dtype=float)
+        if (self.basis.shape != (3, 3) or not np.isfinite(self.basis).all()
+                or not np.allclose(self.basis.T @ self.basis, np.eye(3))
+                or not np.isclose(np.linalg.det(self.basis), 1.)):
+            raise ValueError("Controller-to-EE basis must be a proper rotation")
         self.delta = np.zeros(3)
         self.raw_delta = np.zeros(3)
         self.relative_rotation = np.eye(3)
 
-    def target(self, current):
+    def target(self, current, dt=None):
         if not valid_pose(current):
             raise ValueError("Invalid current controller pose")
         self.raw_delta = current[:3, 3] - self.start[:3, 3]
         # Preserve the validated 5 mm deadband around neutral. Outside it the
         # full displacement is used (no threshold subtraction, no max clamp).
         delta = np.where(np.abs(self.raw_delta) < cfg.POSITION_DEADBAND, 0., self.raw_delta)
-        self.delta += self.alpha_p * (delta - self.delta)
-        # At neutral R_rel=I. B R_rel B^T is an optional FIXED change of basis,
-        # initially identity; it changes axes but never changes rotation angle.
+        alpha_p = self.alpha_p if dt is None else timed_filter_alpha(self.alpha_p, dt, cfg.FILTER_REFERENCE_HZ)
+        alpha_r = self.alpha_r if dt is None else timed_filter_alpha(self.alpha_r, dt, cfg.FILTER_REFERENCE_HZ)
+        self.delta += alpha_p * (delta - self.delta)
+        # Preserve relative LOCAL wrist rotations, then express their axes in
+        # the physical gripper frame. B changes axes, never the rotation angle.
         relative = self.start[:3, :3].T @ current[:3, :3]
         relative = self.basis @ relative @ self.basis.T
         omega = pin.log3(self.relative_rotation.T @ project_so3(relative))
-        self.relative_rotation = project_so3(self.relative_rotation @ pin.exp3(self.alpha_r * omega))
+        self.relative_rotation = project_so3(self.relative_rotation @ pin.exp3(alpha_r * omega))
         target = self.anchor.copy()
         target.translation = self.anchor.translation + self.delta
         target.rotation = self.anchor.rotation @ self.relative_rotation

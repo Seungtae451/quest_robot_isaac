@@ -5,10 +5,12 @@ it to TeleVuer. This process NEVER imports Isaac Sim. TeleVuer itself starts
 its normal WebSocket child process and shared-memory image writer.
 """
 import argparse
+import json
 from contextlib import ExitStack, closing
 import select
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -18,6 +20,7 @@ from robot.f14_ik import F14IK
 from robot.gripper import normalize_input
 from teleop.action_protocol import ActionSender
 from teleop.xr_pose import RelativePoseMapper, average_pose, samples_are_still
+from teleop.input_timing import timed_filter_alpha
 
 
 def parser():
@@ -31,15 +34,19 @@ def parser():
     result.add_argument("--no-filter", action="store_true")
     result.add_argument("--position-only", action="store_true", help="Diagnostic: retain the working translation-only behavior")
     result.add_argument("--verbose", action="store_true")
+    result.add_argument("--wrist-axis-test", action="store_true", help="Observe six guided wrist-axis trials; N + Enter starts each trial")
+    result.add_argument("--wrist-test-dir", type=Path, default=Path("outputs/wrist_axis_check"))
+    result.add_argument("--timing-output", type=Path, default=Path("outputs/quest_input_check/runtime.jsonl"),
+                        help="Append input-rate, processing-latency and IK timing measurements")
     return result
 
 
-def recenter_requested():
+def terminal_command():
     # Canonical terminal input intentionally needs R then Enter; no background
     # keyboard thread or global key grab is required, and Ctrl+C stays normal.
     if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
-        return sys.stdin.readline().strip().lower() == "r"
-    return False
+        return sys.stdin.readline().strip().lower()
+    return ""
 
 
 def main(argv=None):
@@ -53,6 +60,10 @@ def main(argv=None):
     print("HOME EE positions:", [p.translation for p in ik.forward_kinematics(HOME_Q)])
     print(f"Gripper input={args.gripper_input}, encoding={encoding}; semantic 0=open, 1=closed")
     print("R + Enter = recalibrate at held robot pose. Ctrl+C = clean shutdown.")
+    wrist_test = None
+    if args.wrist_axis_test:
+        from teleop.wrist_axis_test import WristAxisTest
+        wrist_test = WristAxisTest(args.wrist_test_dir)
     try:
         with ExitStack() as stack:
             # TeleVuer forks internally. Start it BEFORE constructing ZMQ's
@@ -75,15 +86,26 @@ def main(argv=None):
             fps_start = time.monotonic()
             previous_state = None
             stale_image_sent = False
+            last_control_time = None
+            loops = solves = skipped_events = 0
+            solve_times, input_ages = [], []
+            args.timing_output.parent.mkdir(parents=True, exist_ok=True)
+            timing_file = stack.enter_context(args.timing_output.open("a", buffering=1))
             while True:
                 start = time.monotonic()
+                loops += 1
                 if not tv.tvuer.process.is_alive():
                     raise RuntimeError("TeleVuer child exited; check port 8012 and SSL errors above")
                 restarted = sender.poll_feedback()
                 data, fresh, serial = tv.snapshot()
-                if restarted or recenter_requested():
+                command = terminal_command()
+                if command == "n" and wrist_test and mappers is not None and fresh and sender.ready:
+                    wrist_test.request_start()
+                if restarted or command == "r":
+                    if wrist_test:
+                        wrist_test.interrupt("recalibration / receiver restarted")
                     mappers, settle_start, samples = None, None, [[], []]
-                    print("Receiver connected/restarted or recenter requested; calibrating at held target.")
+                    print("Receiver connected/restarted or recenter requested; calibrating at measured robot pose.")
                 bgr = video.receive()
                 if bgr is not None:
                     send_image_to_xr(tv, bgr)
@@ -94,16 +116,22 @@ def main(argv=None):
                     stale_image_sent = True
 
                 if not fresh or not sender.ready:
+                    if wrist_test:
+                        wrist_test.interrupt("tracking / feedback lost")
                     # No keepalive action is sent on tracking/receiver loss.
-                    # After COMMAND_TIMEOUT the simulator holds the LAST target.
+                    # After COMMAND_TIMEOUT the simulator brakes at its current
+                    # trajectory position instead of chasing an old IK goal.
                     mappers, settle_start, samples = None, None, [[], []]
                     state = "TRACKING LOST / WAITING" if not fresh else "WAITING FOR ISAAC"
                 elif mappers is None:
                     state = "CALIBRATING"
+                    # Stop an in-flight old IK goal immediately while the new
+                    # neutral pose is being collected; keep the gripper state.
+                    sender.send(np.concatenate((sender.measured_state[:14], grippers)), hold_arms=True)
                     if settle_start is None:
                         settle_start = start
-                        q_current = sender.held_action[:14].astype(float).copy()
-                        grippers = sender.held_action[14:].astype(float).copy()
+                        q_current = sender.measured_state[:14].astype(float).copy()
+                        grippers = sender.measured_state[14:].astype(float).copy()
                         print("Quest websocket connected; Tracking ready.")
                         print("Hold both controllers and head still; release triggers. Settling for 2 seconds...")
                     elif start - settle_start >= cfg.CALIBRATION_SETTLE_SECONDS and serial != last_serial:
@@ -114,53 +142,91 @@ def main(argv=None):
                                 print("Calibration motion detected; hold still and retry.")
                                 samples = [[], []]
                             else:
-                                # During the sampling interval any final in-
-                                # flight command has reached Isaac. Anchor at
-                                # that fresh held target, not a reply captured
-                                # while the operator was still moving before R.
-                                q_current = sender.held_action[:14].astype(float).copy()
-                                grippers = sender.held_action[14:].astype(float).copy()
+                                # Recalibrate at the latest measured pose, never
+                                # a distant IK destination still being pursued.
+                                q_current = sender.measured_state[:14].astype(float).copy()
+                                grippers = sender.measured_state[14:].astype(float).copy()
                                 anchors = ik.forward_kinematics(q_current)
-                                mappers = [RelativePoseMapper(average_pose(s), anchor, not args.no_filter)
-                                           for s, anchor in zip(samples, anchors)]
+                                mappers = [RelativePoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
+                                           for side, s, anchor in zip(("left", "right"), samples, anchors)]
+                                last_control_time = start
                                 print("Calibration complete. Teleoperation ACTIVE.")
-                else:
-                    targets = [mapper.target(pose) for mapper, pose in zip(mappers, (data.left_wrist_pose, data.right_wrist_pose))]
+                elif serial != last_serial:
+                    # Consume the newest event once. No repeated filtering/IK
+                    # or action keepalives for a controller event that stopped.
+                    control_dt = 1. / cfg.FILTER_REFERENCE_HZ if last_control_time is None else start - last_control_time
+                    last_control_time = start
+                    skipped_events += max(0, serial - last_serial - 1)
+                    input_ages.append(max(0., start - tv.last_snapshot_controller_time) * 1000)
+                    targets = [mapper.target(pose, dt=control_dt) for mapper, pose in zip(mappers, (data.left_wrist_pose, data.right_wrist_pose))]
                     if args.position_only:
                         for target, mapper in zip(targets, mappers):
                             target.rotation = mapper.anchor.rotation.copy()
+                    solve_started = time.perf_counter()
                     solution, success = ik.solve(
-                        *targets, q_current, max_iter=cfg.IK_MAX_ITER, eps=cfg.IK_EPS,
+                        *targets, sender.measured_state[:14], max_iter=cfg.IK_MAX_ITER, eps=cfg.IK_EPS,
                         dt=cfg.IK_DT, damping=cfg.IK_DAMPING)
-                    if success and np.isfinite(solution).all():
+                    solve_times.append((time.perf_counter() - solve_started) * 1000)
+                    solves += 1
+                    success = success and np.isfinite(solution).all()
+                    if wrist_test:
+                        wrist_test.update(
+                            (data.left_wrist_pose, data.right_wrist_pose), targets,
+                            ik.forward_kinematics(sender.measured_state[:14]), success,
+                            time.monotonic() - sender.last_feedback)
+                    if success:
                         q_current = solution
-                    state = "ACTIVE" if success else "IK FAIL: holding last valid arm q"
+                    else:
+                        q_current = sender.measured_state[:14].astype(float).copy()
+                    state = "ACTIVE" if success else "IK FAIL: braking arms"
                     raw = [getattr(data, f"{side}_ctrl_{args.gripper_input}Value") for side in ("left", "right")]
                     closure = np.array([normalize_input(value, encoding) for value in raw])
-                    alpha = 1. if args.no_filter else cfg.GRIPPER_FILTER_ALPHA
+                    if args.gripper_input == "trigger":
+                        closure = 1.0 - closure
+                    alpha = 1. if args.no_filter else timed_filter_alpha(cfg.GRIPPER_FILTER_ALPHA, control_dt, cfg.FILTER_REFERENCE_HZ)
                     grippers += alpha * (closure - grippers)
-                    # IK failure holds both arms; valid gripper input remains
+                    # IK failure explicitly brakes both arms; gripper remains
                     # independent. Stale tracking stops ALL action transmission.
                     _, still_fresh, _ = tv.snapshot()
                     if still_fresh and sender.ready:
-                        sender.send(np.concatenate((q_current, grippers)))
+                        sender.send(np.concatenate((q_current, grippers)), hold_arms=not success)
                 last_serial = serial
                 if state != previous_state and not state.startswith(("ACTIVE", "IK FAIL")):
                     print(state)
                 previous_state = state
                 interval = .25 if args.verbose else cfg.LOG_INTERVAL
                 if start - last_log >= interval:
+                    elapsed = max(start - fps_start, 1e-6)
+                    timing = tv.input_timing()
+                    stats = {"monotonic_time": start, "state": state,
+                             "input": timing, "control_tick_hz": loops / elapsed,
+                             "ik_hz": solves / elapsed, "skipped_events": skipped_events,
+                             "ik_p50_ms": float(np.median(solve_times)) if solve_times else None,
+                             "ik_p95_ms": float(np.percentile(solve_times, 95)) if solve_times else None,
+                             "input_age_p95_ms": float(np.percentile(input_ages, 95)) if input_ages else None}
+                    timing_file.write(json.dumps(stats) + "\n")
                     info = ""
                     if mappers:
                         info = (f" Lxyz={mappers[0].delta.round(3)} Rxyz={mappers[1].delta.round(3)}"
                                 f" Lrot={mappers[0].angle_degrees:.1f}deg Rrot={mappers[1].angle_degrees:.1f}deg")
                         if args.verbose:
                             info += f" rawL={mappers[0].raw_delta.round(3)} rawR={mappers[1].raw_delta.round(3)} residual={ik.last_error:.3g}"
+                        if state.startswith("IK FAIL") and ik.last_diagnostics:
+                            diagnostic = ik.last_diagnostics
+                            info += (f" posErrL/R_mm={np.round(diagnostic['position_error_mm'], 2)}"
+                                     f" rotErrL/R_deg={np.round(diagnostic['rotation_error_deg'], 2)}"
+                                     f" nearLimits={diagnostic['near_limits']} iter={diagnostic['iterations']}")
                     print(f"{state} seq={sender.sequence} IK={'OK' if state == 'ACTIVE' else 'FAIL' if state.startswith('IK FAIL') else '-'}"
-                          f"{info} grip={grippers.round(2)} video={frames / max(start-fps_start, 1e-6):.1f}fps age={video.age:.2f}s")
+                          f"{info} grip={grippers.round(2)} video={frames / elapsed:.1f}fps age={video.age:.2f}s"
+                          f" input={timing['controller']['hz']:.1f}Hz solve={stats['ik_hz']:.1f}Hz"
+                          f" ikP95={stats['ik_p95_ms']}ms inputAgeP95={stats['input_age_p95_ms']}ms skipped={skipped_events}")
                     last_log, fps_start, frames = start, start, 0
+                    loops = solves = skipped_events = 0
+                    solve_times, input_ages = [], []
                 time.sleep(max(0., 1. / cfg.CONTROL_HZ - (time.monotonic() - start)))
     except KeyboardInterrupt:
+        if wrist_test:
+            wrist_test.interrupt("operator stopped")
         print("\nQuest stopped; Isaac will HOLD its last valid target.")
 
 

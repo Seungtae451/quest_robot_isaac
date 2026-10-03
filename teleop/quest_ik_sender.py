@@ -39,11 +39,7 @@ PACKET_FMT = "!4sId14f"
 # URDF
 # ============================================================
 
-F14_URDF_PATH = (
-    "/home/cocelo-server01/stkim_ws/quest_robot_isaac/"
-    "assets/f14/F14_URDF_rev_2_0_0/urdf/"
-    "FlaminGO_14Dof_Arm_Robot_v2_mujoco.urdf"
-)
+from f14_config import F14_URDF_PATH
 
 
 # ============================================================
@@ -51,10 +47,10 @@ F14_URDF_PATH = (
 # ============================================================
 
 LEFT_HOME = np.array([
-    -0.57,
+     0,
+     0.80,
      0.40,
-     0.22,
-    -0.95,
+    -1.53,
      0.24,
     -0.79,
     -0.27,
@@ -62,10 +58,10 @@ LEFT_HOME = np.array([
 
 
 RIGHT_HOME = np.array([
-    -0.57,
+     0,
+    -0.80,
     -0.40,
-     0.22,
-     0.95,
+    -1.53,
     -0.24,
      0.79,
     -0.27,

@@ -35,6 +35,7 @@ class F14IK:
         self.arm_q_indices = np.array([j.idx_q for j in joints])
         self.arm_v_indices = np.array([j.idx_v for j in joints])
         self.last_error = float("inf")
+        self.last_diagnostics = None
         print(f"Pinocchio nq={self.model.nq}, nv={self.model.nv}; arm indices={self.arm_q_indices.tolist()}")
 
     def arm_to_full_q(self, arm_q):
@@ -57,6 +58,7 @@ class F14IK:
     def solve(self, target_left, target_right, arm_q_init, max_iter=200,
               eps=1e-4, dt=0.2, damping=1e-5, verbose=False):
         q = self.arm_to_full_q(arm_q_init)
+        self.last_diagnostics = None
         for i in range(max_iter + 1):
             pin.forwardKinematics(self.model, self.data, q)
             pin.updateFramePlacements(self.model, self.data)
@@ -85,6 +87,23 @@ class F14IK:
             velocity[self.arm_v_indices] = arm_velocity
             q = pin.integrate(self.model, q, velocity * dt)
             q = np.clip(q, self.model.lowerPositionLimit, self.model.upperPositionLimit)
+        # Record the final failed candidate only. These observations do not
+        # change goals, convergence tolerance, or the caller's braking policy.
+        placements = [self.data.oMf[f] for f in (self.left_ee_frame, self.right_ee_frame)]
+        arm_q = self.full_to_arm_q(q)
+        low = self.model.lowerPositionLimit[self.arm_q_indices]
+        high = self.model.upperPositionLimit[self.arm_q_indices]
+        names = LEFT_JOINT_NAMES + RIGHT_JOINT_NAMES
+        self.last_diagnostics = {
+            "iterations": i,
+            "position_error_mm": [float(np.linalg.norm(actual.translation - target.translation) * 1000)
+                                  for actual, target in zip(placements, (target_left, target_right))],
+            "rotation_error_deg": [float(np.rad2deg(np.linalg.norm(
+                pin.log3(actual.rotation.T @ target.rotation))))
+                                   for actual, target in zip(placements, (target_left, target_right))],
+            "near_limits": [names[k] for k in range(14)
+                            if min(arm_q[k] - low[k], high[k] - arm_q[k]) <= np.deg2rad(.1)],
+        }
         if verbose:
             print(f"IK unreachable/not converged: residual={self.last_error:.6g}")
         # Caller MUST retain its previous valid q on failure. A partial solution
