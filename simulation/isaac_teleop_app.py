@@ -14,6 +14,7 @@ import traceback
 import numpy as np
 
 from config import teleop_config as cfg
+from config import recording_config as recording_cfg
 from robot.f14_config import HOME_ACTION, EE_BODY_NAMES, USD_ARM_SIGNS
 from teleop.action_protocol import ActionReceiver
 from robot.joint_motion import JointMotionLimiter
@@ -29,6 +30,12 @@ def parser():
     result.add_argument("--camera-debug", action="store_true", help="Add colored landmarks and update camera poses")
     result.add_argument("--scene-seed", type=int, help="Repeat a tabletop cube layout; omitted means fresh random placement")
     result.add_argument("--smoke-test", action="store_true", help="360-step HOME/finger/wrist/camera validation, no UDP actuation")
+    result.add_argument("--record", action="store_true", help="Enable Quest A/B/X episode recording to LeRobot v3")
+    result.add_argument("--dataset-root", type=Path, default=recording_cfg.DATASET_ROOT)
+    result.add_argument("--repo-id", default=recording_cfg.REPO_ID, help="Local dataset identifier; does not upload")
+    result.add_argument("--task", default=recording_cfg.TASK)
+    result.add_argument("--writer-python", type=Path, default=recording_cfg.WRITER_PYTHON)
+    result.add_argument("--session-port", type=int, default=recording_cfg.SESSION_PORT)
     return result
 
 
@@ -48,11 +55,25 @@ part of this teleoperation loop.
 
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1. / cfg.PHYSICS_HZ, device=args.device))
     sim.set_camera_view(eye=[1.8, 1.4, 1.3], target=[.3, 0., .5])
-    receiver = publisher = None
+    receiver = publisher = recorder = episode_server = None
+    reset = None
+    reset_count = 0
     cameras = {}
     try:
         robot = create_scene(args.camera_debug, args.scene_seed)
         cameras = create_cameras(args.camera_fps, args.camera_debug or args.smoke_test)
+        cubes = None
+        if args.record:
+            from isaaclab.assets import RigidObject, RigidObjectCfg
+            from dataset.recording import EpisodeRecorder
+            from teleop.episode_protocol import EpisodeServer
+            from simulation.episode_reset import EpisodeReset
+            from simulation.tabletop import sample_cube_poses
+            cubes = RigidObject(RigidObjectCfg(prim_path="/World/Cubes/Cube_.*"))
+            shapes = {name: (camera.cfg.height, camera.cfg.width, 3) for name, camera in cameras.items()}
+            recorder = EpisodeRecorder(args.dataset_root, args.repo_id, args.task, round(args.camera_fps),
+                                       shapes, args.writer_python)
+            episode_server = EpisodeServer(cfg.ACTION_UDP_HOST, args.session_port, recorder)
         sim.reset()
         # Lab 2.3.2's camera XformPrimView lazily seeds Fabric transforms from
         # USD on its FIRST pose read. Do that while the articulation still has
@@ -73,6 +94,10 @@ part of this teleoperation loop.
         measured_state = semantic_state(robot, arm_ids, finger_ids)
         measured_action = measured_state[0].cpu().numpy()
         receiver.update_feedback(measured_action)
+        if recorder:
+            # The installed USD is physically open at protocol value 1. This
+            # keeps the existing trigger mapping and records its actual meaning.
+            receiver.action[14:] = 1.
         motion = JointMotionLimiter(measured_action[:14], cfg.ARM_MAX_VELOCITY,
                                     cfg.ARM_MAX_ACCELERATION, cfg.ARM_MAX_TRACKING_ERROR)
         publisher = VideoPublisher(args.video_endpoint)
@@ -83,6 +108,8 @@ part of this teleoperation loop.
         frame_dt = 1. / args.camera_fps
         frame_accumulator = 0.
         action = HOME_ACTION.copy()
+        if recorder:
+            action[14:] = 1.
         last_log = time.monotonic()
         frame_count = 0
         steps = 0
@@ -104,8 +131,38 @@ part of this teleoperation loop.
                 arms_enabled = True
             else:
                 receiver.poll()
+                if recorder:
+                    recorder.poll()
+                    # READY packets are tracking/hold heartbeats, never IK
+                    # motion. Accept A only at the common physical start pose.
+                    recorder.start_allowed = bool(receiver.state == "ACTIVE"
+                        and np.max(np.abs(measured_action[:14] - HOME_ACTION[:14])) < .015
+                        and np.max(np.abs(motion.velocity)) < .025
+                        and np.min(measured_action[14:]) > .97)
+                    episode_server.poll()
+                    if recorder.state == "RECORDING" and receiver.state != "ACTIVE":
+                        recorder.stop("Tracking/commands lost; review or discard this episode.")
+                    if recorder.reset_requested and recorder.state in ("SAVING", "RESETTING") and (reset is None or reset.error):
+                        reset = EpisodeReset()
+                        recorder.reset_started()
+                        receiver.reset_session(measured_action)
+                        print(f"Episode reset started; dataset state={recorder.state}", flush=True)
                 goal = receiver.action
                 arms_enabled = receiver.arms_enabled
+                if reset is not None:
+                    goal, arms_enabled = reset.goal(measured_action, dt)
+                    if reset.error and recorder.state != "ERROR":
+                        recorder.fail(reset.error)
+                elif recorder and (recorder.state in ("INITIALIZING", "READY", "STARTING")
+                        or recorder.state == "RECORDING" and recorder.pending_observation is None):
+                    # Hold the same HOME/open-gripper drive goal until capture
+                    # has actually captured its first HOME observation,
+                    # regardless of received Quest goals or trigger values.
+                    goal = HOME_ACTION.copy()
+                    goal[14:] = 1.
+                    arms_enabled = True
+                elif recorder and recorder.blocks_teleop:
+                    goal, arms_enabled = action.copy(), False
             # The UDP action is only the IK destination. A continuous drive
             # reference advances from measured startup joints on EVERY physics
             # step. New goals/IK recovery never reset reference or velocity.
@@ -117,9 +174,31 @@ part of this teleoperation loop.
             # scheduled at camera rate; a delayed loop never plays catch-up.
             sim.step(render=False)
             robot.update(dt)
+            if cubes:
+                cubes.update(dt)
             measured_state = semantic_state(robot, arm_ids, finger_ids)
             measured_action = measured_state[0].cpu().numpy()
             receiver.update_feedback(measured_action)
+            if reset is not None and not reset.error:
+                reset.update(measured_action, motion.velocity, dt)
+                if reset.phase == "RESPAWN":
+                    reset_count += 1
+                    seed = None if args.scene_seed is None else args.scene_seed + reset_count
+                    poses = sample_cube_poses(seed)
+                    cube_state = cubes.data.root_state_w.clone()
+                    for index, (pos, rot) in enumerate(poses):
+                        cube_state[index, :3] = torch.tensor(pos, device=sim.device)
+                        cube_state[index, 3:7] = torch.tensor(rot, device=sim.device)
+                    cube_state[:, 7:] = 0.
+                    cubes.write_root_state_to_sim(cube_state)
+                    cubes.reset()
+                    reset.cubes_respawned()
+                    print(f"Episode reset: fresh cube poses {poses}", flush=True)
+                elif reset.phase == "COMPLETE":
+                    receiver.reset_session(measured_action)
+                    recorder.reset_complete()
+                    reset = None
+                    print("New episode environment ready; Quest recalibrates at HOME.", flush=True)
             steps += 1
             frame_accumulator += dt
             for camera in cameras.values():
@@ -132,8 +211,11 @@ part of this teleoperation loop.
                 if observation_callback:
                     observation_callback(observation, action.copy(), steps * dt)
                 images = display_rgb_copies(observation)
-                status = f"UDP {receiver.state} ARM {'FOLLOW' if arms_enabled else 'BRAKE/HOLD'} seq={receiver.latest.sequence if receiver.latest else 0}"
-                composite = compose_quest_view(images, status)
+                if recorder:
+                    recorder.capture(images, measured_action, action, steps * dt)
+                arm_status = "HOME HOLD" if recorder and recorder.state in ("INITIALIZING", "READY", "STARTING") else "FOLLOW" if arms_enabled else "BRAKE/HOLD"
+                status = f"UDP {receiver.state} ARM {arm_status} seq={receiver.latest.sequence if receiver.latest else 0}"
+                composite = compose_quest_view(images, status, recorder.overlay() if recorder else "")
                 publisher.submit(composite, captured)
                 frame_count += 1
                 if args.snapshot_dir and steps >= 60 and not snapshot_saved:
@@ -189,6 +271,11 @@ part of this teleoperation loop.
                       f"arm={'FOLLOW' if arms_enabled else 'BRAKE/HOLD'} lag_limit={bool(motion.tracking_limited.any())} "
                       f"camera={frame_count / (now-last_log):.1f}fps PUB={'ERROR: '+publisher.error if publisher.error else 'RUNNING'} "
                       f"rejected={receiver.rejected}")
+                if reset is not None:
+                    max_error = float(np.max(np.abs(measured_action[:14] - HOME_ACTION[:14])))
+                    max_velocity = float(torch.max(torch.abs(robot.data.joint_vel[0, arm_ids])))
+                    print(f"Episode HOME: phase={reset.phase} error={max_error:.6f}rad "
+                          f"velocity={max_velocity:.6f}rad/s stable={reset.stable:.3f}s", flush=True)
                 last_log, frame_count = now, 0
             time.sleep(max(0., dt - (time.monotonic() - loop_start)))
         if args.smoke_test:
@@ -198,6 +285,10 @@ part of this teleoperation loop.
             if args.snapshot_dir:
                 (args.snapshot_dir / "validation.json").write_text(json.dumps(checks, indent=2) + "\n")
     finally:
+        if episode_server:
+            episode_server.close()
+        if recorder:
+            recorder.close()
         if publisher:
             publisher.close()
         if receiver:
@@ -227,6 +318,14 @@ def main(argv=None):
         arguments.error("--steps must be nonnegative")
     if args.smoke_test:
         args.steps = max(args.steps, 360)
+    if args.record:
+        if args.smoke_test:
+            arguments.error("--record and --smoke-test cannot be combined")
+        if (args.camera_fps != round(args.camera_fps)
+                or abs(cfg.PHYSICS_HZ / args.camera_fps - round(cfg.PHYSICS_HZ / args.camera_fps)) > 1e-9):
+            arguments.error("Recording requires integer camera FPS dividing PHYSICS_HZ (e.g. 30 or 20)")
+        if not args.writer_python.is_file():
+            arguments.error("Run scripts/setup_recording_env.sh to create the LeRobot writer environment")
     # Required even in --headless: camera rendering must stay enabled.
     args.enable_cameras = True
     # Keep Kit's supported default fast shutdown after explicitly releasing

@@ -10,7 +10,7 @@ from teleop.input_timing import event_timing, timed_filter_alpha
 from teleop.xr_pose import RelativePoseMapper
 
 
-def test_controller_rate_prop_is_set_without_changing_other_scene_elements():
+def test_controller_rate_and_video_plane_distance_in_single_and_list_updates():
     from teleop.televuer_adapter import _ControllerRateSession
     from config import teleop_config as cfg
     from vuer.schemas import MotionControllers, ImageBackground
@@ -23,9 +23,14 @@ def test_controller_rate_prop_is_set_without_changing_other_scene_elements():
     assert calls[-1][0]["fps"] == cfg.QUEST_INPUT_HZ == 60
     assert calls[-1][0]["left"] and calls[-1][0]["right"]
     image = ImageBackground(key="frame")
-    expected = image.serialize()
+    image.aspect = 16 / 9
     session.upsert(image, to="bgChildren")
-    assert calls[-1][0] == expected
+    assert calls[-1][0]["distanceToCamera"] == cfg.QUEST_SCREEN_DISTANCE == 1.5
+    assert calls[-1][0]["height"] == cfg.QUEST_SCREEN_HEIGHT == 1.0
+    assert calls[-1][0]["aspect"] == 16 / 9
+    original.upsert = lambda elements, **kw: calls.extend((e.serialize(), kw) for e in elements)
+    session.upsert([ImageBackground(key="left"), ImageBackground(key="right")], to="bgChildren")
+    assert all(calls[-i][0]["distanceToCamera"] == 1.5 for i in (1, 2))
     assert session.CURRENT_WS_ID == "test"
 
 

@@ -80,6 +80,7 @@ class ActionReceiver:
         self.feedback_action = self.action.copy()
         self.latest = None
         self.rejected = 0
+        self.accept_after = 0.
 
     def poll(self) -> bool:
         changed = False
@@ -99,6 +100,8 @@ class ActionReceiver:
                 age = time.monotonic() - packet.timestamp
                 if not 0. <= age <= COMMAND_TIMEOUT:
                     raise ValueError("Stale or future command")
+                if packet.timestamp <= self.accept_after:
+                    raise ValueError("Command belongs to an earlier episode")
                 if self.latest is not None and packet.timestamp <= self.latest.timestamp:
                     raise ValueError("Out-of-order/duplicate command")
                 if self.arm_limits is not None and not packet.hold_arms:
@@ -119,6 +122,16 @@ class ActionReceiver:
 
     def update_feedback(self, measured_action):
         self.feedback_action = validate_action(measured_action).copy()
+
+    def reset_session(self, measured_action):
+        """Fence old UDP targets and force Quest to calibrate after episode reset.
+
+        This changes protocol state only; it never writes physical joint state.
+        """
+        self.boot_time = self.accept_after = time.monotonic()
+        self.latest = None
+        self.action = validate_action(measured_action).copy()
+        self.update_feedback(measured_action)
 
     @property
     def age(self) -> float:

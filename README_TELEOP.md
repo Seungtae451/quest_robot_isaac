@@ -202,6 +202,14 @@ finger_targets = [-opening_left, +opening_left,
 
 ## 카메라와 dataset interface
 
+Quest A/B/X를 사용하는 LeRobot v3 수집을 지원합니다. Isaac에 `--record`를
+추가하면 오른손 A=녹화 시작, B=정지, 정지 후 A=저장 / 왼손 X=폐기입니다.
+A 이전에는 HOME과 열린 그리퍼를 유지하며, 녹화 중에만 조작을 적용합니다.
+영상은 녹화 중 병렬 인코딩하고, 저장 확정은 속도 제한 HOME 복귀와 함께
+진행합니다. 새 큐브 배치와 저장이 모두 끝나면 다음 시연을 시작할 수 있습니다.
+Quest 영상 평면은 `config/teleop_config.py`의 `QUEST_SCREEN_DISTANCE=1.5`m에 표시합니다.
+실행 명령과 π0.5 연결은 [RECORDING_LEROBOT.md](RECORDING_LEROBOT.md)를 참고하세요.
+
 현재 장면은 60×80cm 테이블(상판 높이 30cm), 테이블 중앙의 열린 수집 상자(외부 18×18×8cm), 밝은 빨간색 3cm 큐브 1개를 포함합니다. 상자는 바닥과 네 벽에 충돌이 있고 윗면이 열려 있습니다. 큐브는 20g rigid body로 중력·충돌·마찰이 적용되어 테이블 위에 놓이거나 상자 안에 담길 수 있습니다.
 
 큐브는 Isaac 시작 시 매번 다른 위치와 yaw로 생성됩니다. 상자 양쪽 경계에서 2cm 이상 떨어진 **왼쪽(+Y) 또는 오른쪽(-Y) 구역**에서 생성합니다. 상자가 있는 중앙 띠에는 생성하지 않고, 몸통 쪽 테이블 끝을 기준으로 길이의 **1/4~2/3 구간**만 사용합니다. 가까운 첫 1/4과 먼 쪽 마지막 1/3에는 생성하지 않습니다. 회전한 큐브의 모서리까지 금지 구역과 테이블 가장자리를 침범하지 않게 배치합니다. 물리 동작 중 사용자가 왼쪽 구역으로 옮기는 것은 가능합니다.
@@ -241,7 +249,7 @@ Body는 전방 아래 50도(기존보다 20도 아래), wrist는 link의 -Y 집�
 # callback(observation, commanded_action_16, simulation_time_seconds)
 ```
 
-callback의 `commanded_action_16`은 최종 IK 목적지가 아니라 그 시점에 실제 적용한 속도 제한 drive reference입니다. `observation.state`는 실제 측정값입니다. callback이 다음 frame 이후에도 데이터를 보관하려면 tensor를 clone해야 합니다. 센서 버퍼는 재사용됩니다. 현재 gripper state는 command가 아니라 실제 두 finger 위치로부터 평균 opening을 계산합니다. callback에서는 오래 걸리는 I/O를 하지 마세요. training/LeRobot 저장 pipeline은 이번 범위에 포함하지 않습니다.
+callback의 `commanded_action_16`은 최종 IK 목적지가 아니라 그 시점에 실제 적용한 속도 제한 drive reference입니다. `observation.state`는 실제 측정값입니다. callback이 다음 frame 이후에도 데이터를 보관하려면 tensor를 clone해야 합니다. 센서 버퍼는 재사용됩니다. 현재 gripper state는 command가 아니라 실제 두 finger 위치로부터 평균 opening을 계산합니다. callback에서는 오래 걸리는 I/O를 하지 마세요. `--record`의 LeRobot 저장은 별도 프로세스에서 수행하며 관측과 다음 카메라 간격의 적용 명령을 짝짓습니다.
 
 Display composite는 1280×720, BODY가 가용 폭의 64%, 좌우 각각 18%, aspect-ratio 유지입니다. resize와 label은 새 canvas에만 적용합니다. JPEG quality=80, PUB/SUB 단일 메시지, CONFLATE, pending frame 1개, nonblocking send를 사용합니다. JPEG encoder는 Isaac main loop 밖 thread에서 실행하며 socket도 해당 thread가 소유합니다. SUB는 최신 frame 하나만 decode합니다. 영상이 1초 이상 stale이면 Quest에 안내 이미지를 표시하고 자동 재연결을 기다립니다. `render_to_xr`가 **BGR을 입력받아 내부에서 RGB로 변환**하는 설치 버전의 동작을 adapter에 명시했습니다.
 
@@ -325,6 +333,6 @@ Quest hardware acceptance는 다음을 확인하세요.
 
 ## 구현 범위와 남은 실기 확인
 
-control, camera, video IPC, dataset 연결 지점과 큐브를 상자에 담는 tabletop 장면이 구현되어 있습니다. collision avoidance나 실제 로봇 torque safety, training pipeline은 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
+control, camera, video IPC, LeRobot v3 에피소드 수집과 tabletop 장면이 구현되어 있습니다. 모델 학습은 별도 LeRobot π0.5 환경에서 수행합니다. collision avoidance나 실제 로봇 torque safety는 포함하지 않습니다. 이 프로그램은 Isaac simulation용입니다.
 
 설치 버전에 특유한 카메라 Fabric 초기 pose 동기화와 STOP callback을 코드에 설명했습니다. 원본 package를 수정하지 않고 앱 초기화/종료 순서에서 처리합니다. Quest 착용 상태의 회전축 감각, LAN 인증서 신뢰, headset browser XR 진입, 실제 controller tracking loss, 사용자에게 편한 wrist 시야는 현장 확인이 필요합니다. 자세한 자동 실행 결과는 `VALIDATION_TELEOP.md`에 기록합니다.

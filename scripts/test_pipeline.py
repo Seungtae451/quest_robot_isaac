@@ -39,11 +39,11 @@ def stop(process):
             process.wait(timeout=10)
 
 
-async def connect(session):
+async def connect(session, port=8012):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
-            return await session.ws_connect("wss://127.0.0.1:8012/", ssl=False)
+            return await session.ws_connect(f"wss://127.0.0.1:{port}/", ssl=False)
         except (aiohttp.ClientError, OSError):
             await asyncio.sleep(.1)
     raise RuntimeError("Quest WSS did not start")

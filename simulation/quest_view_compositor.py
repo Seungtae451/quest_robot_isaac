@@ -10,7 +10,7 @@ import numpy as np
 from config import teleop_config as cfg
 
 
-def compose_quest_view(images, status=""):
+def compose_quest_view(images, status="", recording_status=""):
     canvas = np.zeros((cfg.QUEST_VIEW_HEIGHT, cfg.QUEST_VIEW_WIDTH, 3), np.uint8)
     gap = cfg.PANEL_GAP
     usable = cfg.QUEST_VIEW_WIDTH - 4 * gap
@@ -32,4 +32,8 @@ def compose_quest_view(images, status=""):
         cv2.putText(canvas, label, (x, y - 15), cv2.FONT_HERSHEY_SIMPLEX, .55, (220, 220, 220), 1, cv2.LINE_AA)
         x += width + gap
     cv2.putText(canvas, status[:145], (20, cfg.QUEST_VIEW_HEIGHT - 24), cv2.FONT_HERSHEY_SIMPLEX, .5, (200, 200, 200), 1)
+    if recording_status:
+        color = (255, 80, 80) if recording_status.startswith("REC RECORDING") else (255, 220, 80)
+        cv2.putText(canvas, recording_status[:140], (20, cfg.QUEST_VIEW_HEIGHT - 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, .6, color, 1, cv2.LINE_AA)
     return canvas

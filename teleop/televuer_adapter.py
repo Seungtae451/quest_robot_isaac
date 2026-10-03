@@ -19,10 +19,11 @@ import time
 import numpy as np
 from televuer import TeleVuerWrapper
 from televuer.televuer import TeleVuer
-from vuer.schemas import MotionControllers
+from vuer.schemas import MotionControllers, ImageBackground
 
 from config import teleop_config as cfg
 from teleop.xr_pose import valid_pose
+from teleop.recording_buttons import RecordingButtons
 
 
 def certificate_paths():
@@ -79,8 +80,12 @@ class _ControllerRateSession:
         return getattr(self.session, name)
 
     def upsert(self, element, *args, **kwargs):
-        if isinstance(element, MotionControllers):
-            element.fps = cfg.QUEST_INPUT_HZ
+        for item in element if isinstance(element, (list, tuple)) else (element,):
+            if isinstance(item, MotionControllers):
+                item.fps = cfg.QUEST_INPUT_HZ
+            elif isinstance(item, ImageBackground):
+                item.distanceToCamera = cfg.QUEST_SCREEN_DISTANCE
+                item.height = cfg.QUEST_SCREEN_HEIGHT
         return self.session.upsert(element, *args, **kwargs)
 
 
@@ -96,6 +101,7 @@ class FreshTeleVuer(TeleVuer):
         self.head_arrivals = mp.Array("d", 1024, lock=False)
         self.head_serial = mp.Value("Q", 0)
         self.invalid_controller_events = mp.Value("Q", 0)
+        self.recording_buttons = RecordingButtons()
         super().__init__(**kwargs)
 
     async def on_cam_move(self, event, session, fps=60):
@@ -130,6 +136,9 @@ class FreshTeleVuer(TeleVuer):
             valid = False
         with self.snapshot_lock:
             self.controller_valid.value = valid
+            value = event.value if isinstance(event.value, dict) else {}
+            self.recording_buttons.update(value.get("leftState", {}), value.get("rightState", {}),
+                                          arrived, valid=valid)
             if valid:
                 await super().on_controller_move(event, session, fps)
                 self.controller_time.value = time.monotonic()
@@ -216,3 +225,7 @@ class QuestInterface(TeleVuerWrapper):
                         "invalid_controller_events": self.tvuer.invalid_controller_events.value}
         return {"controller": event_timing(controller_times, now, window),
                 "head": event_timing(head_times, now, window), **counters}
+
+    def recording_button_events(self):
+        with self.tvuer.snapshot_lock:
+            return self.tvuer.recording_buttons.drain(time.monotonic())

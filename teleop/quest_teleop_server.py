@@ -21,12 +21,15 @@ from robot.gripper import normalize_input
 from teleop.action_protocol import ActionSender
 from teleop.xr_pose import RelativePoseMapper, average_pose, samples_are_still
 from teleop.input_timing import timed_filter_alpha
+from teleop.episode_protocol import EpisodeClient
+from config import recording_config as recording_cfg
 
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--host-ip", help="Company PC LAN IP printed in the Quest URL; autodetected if omitted")
     result.add_argument("--action-port", type=int, default=cfg.ACTION_UDP_PORT)
+    result.add_argument("--session-port", type=int, default=recording_cfg.SESSION_PORT)
     result.add_argument("--video-endpoint", default=cfg.VIDEO_ZMQ_ENDPOINT)
     result.add_argument("--xr-mode", choices=("immersive", "ego"), default="immersive")
     result.add_argument("--gripper-input", choices=("trigger", "squeeze"), default="trigger")
@@ -71,6 +74,7 @@ def main(argv=None):
             tv = stack.enter_context(closing(QuestInterface(args.xr_mode)))
             tv.print_url(args.host_ip or detect_host_ip())
             sender = stack.enter_context(closing(ActionSender(cfg.ACTION_UDP_HOST, args.action_port)))
+            episodes = stack.enter_context(closing(EpisodeClient(cfg.ACTION_UDP_HOST, args.session_port)))
             video = stack.enter_context(closing(VideoSubscriber(args.video_endpoint)))
             placeholder = waiting_image()
             send_image_to_xr(tv, placeholder)
@@ -85,6 +89,7 @@ def main(argv=None):
             frames = 0
             fps_start = time.monotonic()
             previous_state = None
+            previous_recording_state = None
             stale_image_sent = False
             last_control_time = None
             loops = solves = skipped_events = 0
@@ -97,7 +102,27 @@ def main(argv=None):
                 if not tv.tvuer.process.is_alive():
                     raise RuntimeError("TeleVuer child exited; check port 8012 and SSL errors above")
                 restarted = sender.poll_feedback()
+                episodes.poll()
                 data, fresh, serial = tv.snapshot()
+                for button in tv.recording_button_events():
+                    can_start = (mappers is not None and fresh and sender.ready and not restarted
+                                 and episodes.status.get("start_allowed", False)) if episodes.available else False
+                    if episodes.available and (button != "a" or episodes.status["state"] != "READY" or can_start):
+                        if episodes.button(button) and button == "a" and episodes.status["state"] == "READY":
+                            # The press pose, not an earlier waiting/calibration
+                            # pose, is zero. Moving controllers before A cannot
+                            # become a jump when the writer acknowledges start.
+                            q_current = sender.measured_state[:14].astype(float).copy()
+                            grippers = sender.measured_state[14:].astype(float).copy()
+                            anchors = ik.forward_kinematics(q_current)
+                            mappers = [RelativePoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
+                                for side, pose, anchor in zip(("left", "right"),
+                                    (data.left_wrist_pose, data.right_wrist_pose), anchors)]
+                            last_control_time = start
+                if episodes.available and episodes.status["state"] != previous_recording_state:
+                    previous_recording_state = episodes.status["state"]
+                    print(f"Episode: {previous_recording_state}; frames={episodes.status['frames']} "
+                          f"saved={episodes.status['saved_episodes']} {episodes.status.get('error', '')}")
                 command = terminal_command()
                 if command == "n" and wrist_test and mappers is not None and fresh and sender.ready:
                     wrist_test.request_start()
@@ -115,7 +140,12 @@ def main(argv=None):
                     send_image_to_xr(tv, waiting_image("Isaac video unavailable / stale"))
                     stale_image_sent = True
 
-                if not fresh or not sender.ready:
+                if episodes.blocks_teleop and not episodes.preparing_episode:
+                    # Isaac owns braking/reset and gripper hold between episodes.
+                    # Buttons remain usable in REVIEW; no stale IK is sent.
+                    mappers, settle_start, samples = None, None, [[], []]
+                    state = f"EPISODE {episodes.status['state']}"
+                elif not fresh or not sender.ready:
                     if wrist_test:
                         wrist_test.interrupt("tracking / feedback lost")
                     # No keepalive action is sent on tracking/receiver loss.
@@ -150,7 +180,13 @@ def main(argv=None):
                                 mappers = [RelativePoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
                                            for side, s, anchor in zip(("left", "right"), samples, anchors)]
                                 last_control_time = start
-                                print("Calibration complete. Teleoperation ACTIVE.")
+                                print("Calibration complete. HOME HOLD; A starts recording and teleoperation."
+                                      if episodes.preparing_episode else "Calibration complete. Teleoperation ACTIVE.")
+                elif episodes.preparing_episode:
+                    # Keep tracking freshness for A eligibility, with the actual
+                    # open grippers held and no IK or trigger input applied.
+                    sender.send(sender.measured_state, hold_arms=True)
+                    state = "HOME HOLD / A TO RECORD" if episodes.status["state"] == "READY" else "STARTING RECORDING / HOME HOLD"
                 elif serial != last_serial:
                     # Consume the newest event once. No repeated filtering/IK
                     # or action keepalives for a controller event that stopped.

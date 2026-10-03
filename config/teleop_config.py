@@ -65,6 +65,9 @@ LOG_INTERVAL = 1.0
 BODY_CAMERA_WIDTH, BODY_CAMERA_HEIGHT = 640, 480
 WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT = 320, 240
 QUEST_VIEW_WIDTH, QUEST_VIEW_HEIGHT = 1280, 720
+# Head-following video plane in Quest, independent of the robot camera mounts.
+QUEST_SCREEN_DISTANCE = 1.5  # metres; immersive upstream default was 1.0
+QUEST_SCREEN_HEIGHT = 1.0    # metres; farther plane also reduces visual crowding
 MAIN_VIEW_FRACTION = 0.64
 PANEL_GAP = 12
 
