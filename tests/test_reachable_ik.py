@@ -80,3 +80,23 @@ def test_budget_stops_additional_search_without_using_failed_output(monkeypatch)
     result = ReachableIK(ik, budget_ms=0.).solve(*make_targets(ik, np.ones(3)), HOME_Q, **OPTIONS)
     assert len(calls) == 1 and not result.success
     np.testing.assert_array_equal(result.q, HOME_Q)
+
+
+def test_limit_aware_ik_finds_downward_pose_that_old_limit_clipping_misses():
+    ik = F14IK(F14_URDF_PATH)
+    targets = make_targets(ik, np.array([-.07434536875244477, .1602743635840903, .007675769839950795]))
+    _, old_ok = ik.solve(*targets, HOME_Q, **OPTIONS)
+    assert not old_ok
+    q, ok = ik.solve(*targets, HOME_Q, **OPTIONS,
+                     limit_margin=cfg.IK_LIMIT_MARGIN, limit_gain=cfg.IK_LIMIT_GAIN)
+    assert ok
+    assert np.all(q >= ik.model.lowerPositionLimit[ik.arm_q_indices])
+    assert np.all(q <= ik.model.upperPositionLimit[ik.arm_q_indices])
+    for actual, target in zip(ik.forward_kinematics(q), targets):
+        assert np.linalg.norm(pin.log6(actual.inverse()*target).vector) < cfg.IK_EPS
+    # The teleop follower still bounds the next joint destination; a distant
+    # alternative solution must not bypass branch continuity or drive limits.
+    result=ReachableIK(ik,budget_ms=1000.).solve(*targets,HOME_Q,**OPTIONS,
+                     limit_margin=cfg.IK_LIMIT_MARGIN,limit_gain=cfg.IK_LIMIT_GAIN)
+    assert result.success
+    assert np.max(np.abs(result.q-HOME_Q)) <= cfg.IK_FOLLOW_MAX_JOINT_STEP

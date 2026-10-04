@@ -16,7 +16,8 @@ DT = 1 / 60
 
 def limiter():
     return JointMotionLimiter(np.zeros(14), cfg.ARM_MAX_VELOCITY,
-                              cfg.ARM_MAX_ACCELERATION, cfg.ARM_MAX_TRACKING_ERROR)
+                              cfg.ARM_MAX_ACCELERATION, cfg.ARM_MAX_TRACKING_ERROR,
+                              allow_tracking_retreat=True)
 
 
 def checked_step(motion, goal, measured=None, enabled=True):
@@ -106,9 +107,36 @@ def test_hold_protocol_and_feedback_report_current_measured_state():
             assert not receiver.arms_enabled
 
 
+@pytest.mark.parametrize('sign', [-1., 1.])
+def test_blocked_joint_can_retreat_without_resetting_reference_or_exceeding_limits(sign):
+    motion = limiter()
+    measured = np.zeros(14)
+    for _ in range(240):
+        checked_step(motion, sign * np.ones(14), measured=measured)
+    stopped = motion.position.copy()
+    assert motion.tracking_limited.all()
+    first = checked_step(motion, -sign * np.ones(14), measured=measured)
+    assert np.max(np.abs(first - stopped)) < .001
+    for _ in range(120):
+        checked_step(motion, measured, measured=measured)
+    assert np.max(np.abs(motion.position)) < .01
+    assert not motion.tracking_limited.any()
+
+
 def test_bad_motion_input_is_rejected():
     motion = limiter()
     with pytest.raises(ValueError):
         motion.step(np.ones(14), np.zeros(14), float("nan"))
     with pytest.raises(ValueError):
         motion.step(np.full(14, np.nan), np.zeros(14), DT)
+
+
+def test_inference_default_keeps_previous_tracking_brake_behavior():
+    motion=JointMotionLimiter(np.zeros(14),cfg.ARM_MAX_VELOCITY,
+                             cfg.ARM_MAX_ACCELERATION,cfg.ARM_MAX_TRACKING_ERROR)
+    for _ in range(240):
+        checked_step(motion,np.ones(14),measured=np.zeros(14))
+    stopped=motion.position.copy()
+    for _ in range(120):
+        checked_step(motion,-np.ones(14),measured=np.zeros(14))
+    np.testing.assert_array_equal(motion.position,stopped)

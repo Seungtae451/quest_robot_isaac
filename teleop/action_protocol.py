@@ -1,6 +1,6 @@
 """Local UDP action transport shared by the two independent processes.
 
-80-byte network-endian packet: !4sId16f = F16A, uint32 sequence,
+80-byte network-endian packet: !4sId16f = F16A/F16D/F16H, uint32 sequence,
 float64 monotonic timestamp (seconds on this host), 16 float32 actions.
 Actions: left q[7] radians, right q[7] radians, left/right closure [0,1].
 Timestamps reject queued/reordered/replayed packets even across sender restarts.
@@ -11,6 +11,7 @@ restarted simulator require a new calibration, without commanding a HOME jump.
 It is NOT another action schema or a dataset observation.
 """
 from dataclasses import dataclass
+import json
 import socket
 import struct
 import time
@@ -22,11 +23,14 @@ from robot.f14_config import HOME_ACTION
 
 MAGIC = b"F16A"
 HOLD_MAGIC = b"F16H"  # same packet shape; brake arms while allowing gripper commands
+DIRECT_MAGIC = b"F16D"  # integrated differential reference; receiver limits still apply
 PACKET_FMT = "!4sId16f"
 PACKET = struct.Struct(PACKET_FMT)
 PACKET_SIZE = PACKET.size
 QUERY = b"F16?"
 STATUS = struct.Struct("!4sd16f")
+TABLE_QUERY = b"F16T?"
+TABLE_STATUS = b"F16T"
 
 
 def validate_action(action) -> np.ndarray:
@@ -44,23 +48,25 @@ class ActionPacket:
     timestamp: float
     action: np.ndarray
     hold_arms: bool = False
+    direct_reference: bool = False
 
 
-def pack_action(action, sequence: int, timestamp: float | None = None, *, hold_arms=False) -> bytes:
+def pack_action(action, sequence: int, timestamp: float | None = None, *, hold_arms=False, direct_reference=False) -> bytes:
     action = validate_action(action)
     timestamp = time.monotonic() if timestamp is None else timestamp
     if not np.isfinite(timestamp) or timestamp < 0:
         raise ValueError("Invalid monotonic timestamp")
-    return PACKET.pack(HOLD_MAGIC if hold_arms else MAGIC, sequence & 0xffffffff, timestamp, *action)
+    magic = HOLD_MAGIC if hold_arms else DIRECT_MAGIC if direct_reference else MAGIC
+    return PACKET.pack(magic, sequence & 0xffffffff, timestamp, *action)
 
 
 def unpack_action(payload: bytes) -> ActionPacket:
     if len(payload) != PACKET_SIZE:
         raise ValueError(f"Expected {PACKET_SIZE} bytes, got {len(payload)}")
     magic, sequence, timestamp, *action = PACKET.unpack(payload)
-    if magic not in (MAGIC, HOLD_MAGIC) or not np.isfinite(timestamp) or timestamp < 0:
+    if magic not in (MAGIC, HOLD_MAGIC, DIRECT_MAGIC) or not np.isfinite(timestamp) or timestamp < 0:
         raise ValueError("Bad action magic or timestamp")
-    return ActionPacket(sequence, timestamp, validate_action(action), magic == HOLD_MAGIC)
+    return ActionPacket(sequence, timestamp, validate_action(action), magic == HOLD_MAGIC, magic == DIRECT_MAGIC)
 
 
 class ActionReceiver:
@@ -81,17 +87,26 @@ class ActionReceiver:
         self.latest = None
         self.rejected = 0
         self.accept_after = 0.
+        self.table_feedback = None
 
     def poll(self) -> bool:
         changed = False
         while True:
             try:
-                payload, peer = self.socket.recvfrom(4096)
+                payload, peer = self.socket.recvfrom(8192)
             except BlockingIOError:
                 break
             if payload == QUERY:
                 try:
                     self.socket.sendto(STATUS.pack(b"F16S", self.boot_time, *self.feedback_action), peer)
+                except OSError:
+                    pass
+                continue
+            if payload == TABLE_QUERY:
+                feedback = dict(self.table_feedback or {'enabled': False, 'timestamp': time.monotonic()})
+                feedback['boot_time'] = self.boot_time
+                try:
+                    self.socket.sendto(TABLE_STATUS + json.dumps(feedback, allow_nan=False).encode(), peer)
                 except OSError:
                     pass
                 continue
@@ -119,6 +134,10 @@ class ActionReceiver:
     @property
     def arms_enabled(self) -> bool:
         return self.state == "ACTIVE" and not self.latest.hold_arms
+
+    @property
+    def direct_reference(self) -> bool:
+        return self.arms_enabled and self.latest.direct_reference
 
     def update_feedback(self, measured_action):
         self.feedback_action = validate_action(measured_action).copy()
@@ -158,20 +177,32 @@ class ActionSender:
         self.held_action = HOME_ACTION.copy()
         self.last_feedback = 0.
         self.last_query = 0.
+        self.table_feedback = None
 
     def poll_feedback(self) -> bool:
         """Return True only on first connection or a different simulator boot."""
         now = time.monotonic()
         if now - self.last_query >= 1. / FEEDBACK_HZ:
             self.socket.sendto(QUERY, self.destination)
+            self.socket.sendto(TABLE_QUERY, self.destination)
             self.last_query = now
         restarted = False
         while True:
             try:
-                payload, peer = self.socket.recvfrom(4096)
+                payload, peer = self.socket.recvfrom(8192)
             except BlockingIOError:
                 break
-            if peer != self.destination or len(payload) != STATUS.size:
+            if peer != self.destination:
+                continue
+            if payload.startswith(TABLE_STATUS):
+                try:
+                    value=json.loads(payload[len(TABLE_STATUS):])
+                    if isinstance(value,dict):
+                        self.table_feedback=value
+                except (ValueError,UnicodeError):
+                    pass
+                continue
+            if len(payload) != STATUS.size:
                 continue
             magic, boot, *held = STATUS.unpack(payload)
             if magic != b"F16S" or not np.isfinite(boot):
@@ -193,9 +224,10 @@ class ActionSender:
     def ready(self) -> bool:
         return self.boot_time is not None and time.monotonic() - self.last_feedback <= COMMAND_TIMEOUT
 
-    def send(self, action, *, hold_arms=False):
+    def send(self, action, *, hold_arms=False, direct_reference=False):
         self.sequence = (self.sequence + 1) & 0xffffffff
-        self.socket.sendto(pack_action(action, self.sequence, hold_arms=hold_arms), self.destination)
+        self.socket.sendto(pack_action(action, self.sequence, hold_arms=hold_arms,
+                                      direct_reference=direct_reference), self.destination)
 
     def close(self):
         self.socket.close()

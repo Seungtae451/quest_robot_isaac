@@ -162,9 +162,11 @@ def test_compositor_keeps_raw_rgb_unchanged():
     before = {k: v.copy() for k, v in images.items()}
     composite = compose_quest_view(images, "test")
     assert composite.shape == (720, 1280, 3)
-    np.testing.assert_array_equal(composite[360, 50], [255, 0, 0])
-    np.testing.assert_array_equal(composite[360, 640], [0, 255, 0])
-    np.testing.assert_array_equal(composite[360, 1200], [0, 0, 255])
+    np.testing.assert_array_equal(composite[320,640],[0,255,0])
+    # Body-only input works; wrist images are neither required nor displayed.
+    np.testing.assert_array_equal(compose_quest_view({'front':images['front']},'test'),composite)
+    assert not np.any(np.all(composite==[255,0,0],axis=-1))
+    assert not np.any(np.all(composite==[0,0,255],axis=-1))
     for key in images:
         np.testing.assert_array_equal(images[key], before[key])
 

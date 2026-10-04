@@ -1,4 +1,4 @@
-"""Three actual VLA RGB sensors, also the ONLY source of Quest camera images.
+"""Three actual VLA RGB sensors, shared unchanged with the Quest body panel.
 
 CameraCfg and Camera are from the installed Isaac Lab 2.3.2 checkout. Camera
 prims are children of the actual USD rigid links, so wrists follow articulation

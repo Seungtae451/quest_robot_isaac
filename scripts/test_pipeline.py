@@ -107,7 +107,7 @@ async def run():
                 print("Pipeline: Isaac ready, actual ZMQ video received", flush=True)
 
                 def start_quest():
-                    return subprocess.Popen([sys.executable, "-u", "scripts/run_quest_teleop.py", "--host-ip", "127.0.0.1",
+                    return subprocess.Popen([sys.executable, "-u", "scripts/run_quest_teleop.py", "--xr-mode", "immersive", "--host-ip", "127.0.0.1",
                                              "--action-port", "15005", "--video-endpoint", "tcp://127.0.0.1:15556", "--no-filter",
                                              "--timing-output", str(timing_path)],
                                             cwd=ROOT, env=env, stdout=quest_log, stderr=subprocess.STDOUT)
@@ -116,10 +116,17 @@ async def run():
                 async with aiohttp.ClientSession() as session:
                     ws = await connect(session)
                     await feed(ws, monitor, 5.)
-                    # HOME is held by physical drives; the new wrist HOME can
-                    # settle about 1 mrad from nominal under gravity. Recenter
-                    # must preserve that measured pose, not force nominal q.
-                    np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.002)
+                    # Differential IK corrects measured HOME's small tilt;
+                    # judge its Cartesian position and full rotation too,
+                    # rather than requiring identical redundant joint angles.
+                    np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.015)
+                    ik = F14IK(F14_URDF_PATH)
+                    nominal = ik.forward_kinematics(HOME_Q)
+                    actual_home = ik.forward_kinematics(monitor.measured_state[:14])
+                    for actual_pose, expected_pose, rotation in zip(actual_home, nominal,
+                            (LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT)):
+                        assert np.linalg.norm(actual_pose.translation - expected_pose.translation) < .001
+                        assert np.linalg.norm(pin.log3(rotation.T @ actual_pose.rotation)) < .002
                     result["initial_home_max_error_rad"] = float(np.max(np.abs(monitor.measured_state[:14] - HOME_Q)))
                     neutral_measured_q = monitor.measured_state[:14].copy()
                     # Allow the bounded drive trajectory to reach the IK goal;
@@ -127,7 +134,6 @@ async def run():
                     await feed(ws, monitor, 6., -.04, .02, (.6, .2))
                     action = monitor.measured_state.copy()
                     np.testing.assert_allclose(action[14:], [.6, .2], atol=.03)
-                    ik = F14IK(F14_URDF_PATH)
                     home = ik.forward_kinematics(neutral_measured_q)
                     actual = ik.forward_kinematics(action[:14])
                     translation_errors = []
@@ -140,12 +146,13 @@ async def run():
                     result["measured_fk_rotation_errors_rad"] = rotation_errors
                     result["received_closures"] = action[14:].tolist()
                     print("Pipeline: WSS -> XYZ/downward IK -> bounded drive -> measured Isaac pose verified", flush=True)
-                    # A genuinely unreachable controller pose requests arm
-                    # braking; returning to a different reachable pose must
-                    # start gradually from the held measured state.
+                    # Differential IK follows an unreachable request only as
+                    # far as bounded feasible velocities permit, then retreats.
+                    before_far = ik.forward_kinematics(action[:14])
                     await feed(ws, monitor, 1.5, 1., .02, (.6, .2))
-                    np.testing.assert_allclose(monitor.measured_state[:14], action[:14], atol=.002)
-                    assert "IK FAIL" in (output / "quest.log").read_text()
+                    after_far = ik.forward_kinematics(monitor.measured_state[:14])
+                    assert after_far[0].translation[0] > before_far[0].translation[0] + .01
+                    assert np.isfinite(monitor.measured_state).all()
                     stopped = monitor.measured_state.copy()
                     await feed(ws, monitor, .15, -.02, .02, (.6, .2))
                     recovery_step = float(np.max(np.abs(monitor.measured_state[:14] - stopped[:14])))
@@ -154,7 +161,7 @@ async def run():
                     action = monitor.measured_state.copy()
                     for anchor, actual_pose in zip(home, ik.forward_kinematics(action[:14])):
                         assert np.linalg.norm(actual_pose.translation - anchor.translation - [-.02, 0., 0.]) < .001
-                    result["failed_ik_hold_and_slow_recovery"] = True
+                    result["unreachable_ik_bounded_motion_and_recovery"] = True
                     result["recovery_first_150ms_max_joint_change_rad"] = recovery_step
                     # Consume a server image event as proof the real Isaac video
                     # also traversed Quest's SUB/render_to_xr/WSS uplink path.
@@ -202,7 +209,12 @@ async def run():
                             raise RuntimeError("Restarted Isaac exited; see isaac.log")
                     assert monitor.boot_time != old_boot
                     await feed(ws, monitor, 5., neutral_shift=.3)
-                    np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.002)
+                    np.testing.assert_allclose(monitor.measured_state[:14], HOME_Q, atol=.015)
+                    for actual_pose, expected_pose, rotation in zip(
+                            ik.forward_kinematics(monitor.measured_state[:14]), nominal,
+                            (LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT)):
+                        assert np.linalg.norm(actual_pose.translation - expected_pose.translation) < .001
+                        assert np.linalg.norm(pin.log3(rotation.T @ actual_pose.rotation)) < .002
                     result["restarted_home_max_error_rad"] = float(np.max(np.abs(monitor.measured_state[:14] - HOME_Q)))
                     restarted_home = monitor.measured_state[:14].copy()
                     await feed(ws, monitor, 1., neutral_shift=.3)

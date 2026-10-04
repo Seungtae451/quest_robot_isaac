@@ -85,7 +85,8 @@ class EpisodeRecorder:
     def status(self):
         return {"state": self.state, "generation": self.generation, "frames": self.frames,
                 "saved_episodes": self.saved_episodes, "notice": self.notice,
-                "error": self.error, "session_id": self.session_id, "start_allowed": bool(self.start_allowed)}
+                "error": self.error, "session_id": self.session_id, "start_allowed": bool(self.start_allowed),
+                "start_readiness": getattr(self, 'start_readiness', None)}
 
     def _command(self, operation):
         self.outbox.append([json.dumps({"op": operation, "session_id": self.session_id}).encode()])

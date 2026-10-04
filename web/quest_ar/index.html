@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>F14 Quest AR</title>
+  <style>
+    body{margin:0;background:#111923;color:#e7eef4;font:16px system-ui,sans-serif}
+    canvas{display:block}#panel{position:absolute;z-index:2;top:20px;left:20px;max-width:540px;background:#172535ed;padding:20px;border-radius:12px}
+    h1{font-size:24px;margin:0 0 12px}p{line-height:1.6;margin:8px 0}
+    button{font:inherit;background:#2f90ce;color:white;border:0;padding:12px 20px;border-radius:6px;cursor:pointer}
+    button:disabled{opacity:.5;cursor:wait}#status{color:#a9d6ee;white-space:pre-line}
+  </style>
+  <script type="importmap">{"imports":{"three":"/assets/vendor/three/build/three.module.js","three/addons/":"/assets/vendor/three/examples/jsm/"}}</script>
+</head>
+<body>
+  <div id="panel">
+    <h1>F14 Quest AR</h1>
+    <p>실제 공간에 로봇과 작업대를 배치합니다. 오른손으로 바닥을 가리키고 A로 고정하세요.<br>
+    배치 중 오른쪽 스틱: 방향 · 왼쪽 스틱: 위치 미세 조정.</p>
+    <p>하늘색 점은 손 전체가 아닌 컨트롤러의 grip 추적점입니다.<br>
+    좌우 점을 각각 손목 구(반지름 5cm)에 넣어 양쪽 구가 초록색이 되고,<br>
+    서버가 연결 준비 완료를 표시하면 A로 시작합니다.<br>
+    B: 정지 · 검토 중 A: 저장 / X: 폐기.</p>
+    <p>LeRobot에는 Isaac의 body·왼쪽 손목·오른쪽 손목 카메라만 저장됩니다.</p>
+    <button id="enter" disabled>AR 준비 중…</button>
+    <p id="status">모델을 불러오는 중…</p>
+  </div>
+  <script type="module" src="/web/client.js"></script>
+</body>
+</html>

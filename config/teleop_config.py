@@ -29,6 +29,7 @@ CONTROLLER_TO_EE_ROT = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.))
 LEFT_CONTROLLER_TO_EE_ROT = ((0., 0., 1.), (-1., 0., 0.), (0., -1., 0.))
 RIGHT_CONTROLLER_TO_EE_ROT = ((0., 0., -1.), (-1., 0., 0.), (0., 1., 0.))
 
+# Legacy 2D mode only; default AR uses a fixed local-floor/world transform.
 # This matches the inspected installed wrapper's default. Its positions are
 # relative to the head, with head yaw removed, then shifted to a waist origin.
 # Do not add another OpenXR axis swap. Keep the head still for mapping tests.
@@ -41,6 +42,8 @@ IK_MAX_ITER = 100
 IK_EPS = 2e-4
 IK_DT = 0.3
 IK_DAMPING = 1e-4
+IK_LIMIT_MARGIN = 0.2617993877991494  # 15 degrees; avoid outward motion near URDF limits
+IK_LIMIT_GAIN = 0.30  # nullspace joint-limit repulsion, rad per solver time unit
 # Follow from measured FK in small Cartesian steps; shrink on IK failure.
 IK_FOLLOW_MAX_STEP = 0.04  # m, per solve (receiver still limits joint speed)
 IK_FOLLOW_MAX_JOINT_STEP = 0.20  # rad; reject a distant IK branch
@@ -48,7 +51,20 @@ IK_FOLLOW_RETRIES = 4
 IK_FOLLOW_RETRY_ITER = 50
 IK_FOLLOW_BUDGET_MS = 12.0  # stop starting retries after this elapsed budget
 
-# IK produces a destination, never an instantaneous drive target. These limits
+# Live Quest uses differential IK with two independent ProxQP problems.
+# The iterative IK options above remain for offline reachability/spawn checks.
+QP_POSITION_GAIN = 3.0  # s^-1, Cartesian error feedback
+QP_ORIENTATION_GAIN = 5.0  # s^-1, full fixed downward rotation feedback
+QP_MAX_CARTESIAN_SPEED = 0.25  # m/s (25 cm/s), before joint velocity constraints
+QP_LIMIT_GAIN = 0.10  # rad/s, redundant joint-limit avoidance
+QP_REGULARIZATION = 1e-4  # positive definite objective, also near singularities
+QP_MAX_ITER = 100  # small 7-variable QPs; leave room for active-set changes
+QP_MAX_INNER_ITER = 50  # ProxQP's default 1500 is excessive for live control
+QP_COLD_RETRY_BUDGET_MS = 4.0  # start at most one cold retry per nonconverged arm
+QP_MAX_DT = 0.05  # never integrate a long pause in one step
+QP_LAG_HORIZON = 0.5  # seconds, predictive reference/measurement lag bound
+
+# Both differential references and legacy destinations obey these limits.
 # are always enforced by the Isaac receiver, including with --no-filter.
 ARM_MAX_VELOCITY = 0.25  # rad/s (~14.3 deg/s)
 ARM_MAX_ACCELERATION = 0.50  # rad/s^2 (~28.6 deg/s^2)
@@ -76,7 +92,6 @@ QUEST_VIEW_WIDTH, QUEST_VIEW_HEIGHT = 1280, 720
 # Head-following video plane in Quest, independent of the robot camera mounts.
 QUEST_SCREEN_DISTANCE = 1.5  # metres; immersive upstream default was 1.0
 QUEST_SCREEN_HEIGHT = 1.0    # metres; farther plane also reduces visual crowding
-MAIN_VIEW_FRACTION = 0.64
 PANEL_GAP = 12
 
 # CameraCfg convention="world": camera +X looks forward and +Z is image up.

@@ -6,6 +6,24 @@ from config import recording_config as cfg
 from robot.f14_config import HOME_ACTION
 
 
+def home_start_status(measured, reference_velocity, receiver_state):
+    """Report the unchanged physical HOME gates used before recording A."""
+    error = float(np.max(np.abs(measured[:14] - HOME_ACTION[:14])))
+    velocity = float(np.max(np.abs(reference_velocity)))
+    open_ratio = float(np.min(measured[14:]))
+    reasons = []
+    if receiver_state != 'ACTIVE':
+        reasons.append('HOME_COMMAND_STALE')
+    if not error < .015:
+        reasons.append('HOME_JOINT_ERROR')
+    if not velocity < .025:
+        reasons.append('HOME_STILL_MOVING')
+    if not open_ratio > .97:
+        reasons.append('HOME_GRIPPER_NOT_OPEN')
+    return {'allowed': not reasons, 'reasons': reasons, 'joint_error_rad': error,
+            'reference_speed_rad_s': velocity, 'min_open_ratio': open_ratio}
+
+
 class EpisodeReset:
     def __init__(self):
         self.elapsed = 0.

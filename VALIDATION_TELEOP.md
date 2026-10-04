@@ -118,3 +118,169 @@
 - 전체 pytest **79 passed**: 실제 URDF의 도달 불가 요청→근처 성공 위치 이동→안쪽 복귀, 실패 partial q 거부, FK/수직 방향·관절 제한, 반복/시간 예산 확인.
 - 실제 Isaac + 합성 Quest WSS + 공식 LeRobot 검사: `outputs/recording_pipeline_check/20261004_033240/validation.json`. 중립에서 +1m의 불가능한 요청에도 검증된 단계로 전진, 요청을 되돌리면 복귀. 수직 자세, 매 A 기준 갱신, 녹화·저장·폐기·느린 HOME 리셋 통과. 기존 데이터 수정 없음.
 - 실제 경계 반복 계산 100회, P95 약 9.6ms / 최대 약 12.6ms(동일 PC, 실제 물리 드라이브 없이 seed 진행). 실시간 비용은 부하와 자세에 따라 달라짐.
+
+## 2026-10-04: Pinocchio + ProxQP differential IK
+
+Quest의 반복 DLS/공통 backtracking을 양팔 독립 QP 속도 제어로 교체했습니다.
+ProxQP 0.7.2를 기존 env_isaaclab에 설치했고 Pinocchio 2.7.0/NumPy는 유지했습니다.
+각 팔은 7개 속도 변수, 13개 이하의 제약 행을 사용합니다. 중복 충돌 분리면을
+합치고 목적함수를 정규화하며, 변경된 Jacobian의 preconditioner를 갱신합니다.
+최대 외부/내부 반복은 100/50회이고, 미수렴 시 시간 예산 안에서 한 번만
+cold restart합니다. 모든 결과는 제약과 nonlinear FK로 다시 검증합니다.
+
+- 관련 회귀 **111 passed**. 실제 URDF의 정밀도·속도·가속도·관절 범위,
+  도달 불가 목표의 독립 팔 동작/후퇴, 막힌 측정 관절, 실패 결과 거부,
+  작은 PhysX HOME 오차와 변하는 collider envelope, packet/timeout 검사 포함.
+  openpi/GR00T 전용 의존성이 없는 Isaac 환경에서는 해당 별도 테스트 모듈을
+  실행하지 않았습니다.
+- 실제 GPU: 양팔 열린 HOME에서 **40.282mm** 상승, 이어서 1,440 physics step의
+  상판 하강/상자 벽 접근. 최소 상판 간격 좌/우 **2.231/2.230mm**, 손가락의
+  상판·상자 바닥·네 벽 접촉력 **0N**. 계산 시간 P50/P95/최대
+  **1.386/1.485/5.623ms**. 초기 수직 오차 회복 중 22개 팔 결과는 nonlinear
+  검증에서 거부되어 안전하게 감속했고, QP 자체 미수렴은 없었습니다.
+  이 수치는 해당 테스트 경로에 한정되며 전체 작업 공간의 충돌 보증은 아닙니다.
+- 실제 Isaac + 합성 Quest WSS + 공식 LeRobot 저장/재읽기 통과:
+  **369프레임**, 컨트롤러 회전 무시, 불가능한 목표로 점진 이동 후 복귀,
+  A 순간 기준 갱신, 저장/폐기/동일 HOME/새 큐브 검증. 측정 EE 방향 오차
+  좌/우 **0.0325/0.0329도**, 이동 중 손가락 축 최대 기울기 **0.2391도**.
+- 데이터는 기존 state16/action16 및 body(front)/좌우 wrist RGB 3개 형식입니다.
+  사용자 데이터셋은 수정하지 않았고, 검증은 별도 출력 데이터셋에 저장했습니다.
+  inference는 기존 JointMotionLimiter 기본 제어를 유지합니다.
+
+근거: [GPU 결과](outputs/proxqp_check/validation.json),
+[녹화 결과](outputs/recording_pipeline_check/20261004_230256/validation.json),
+[공식 LeRobot 재읽기](outputs/recording_pipeline_check/20261004_230256/reload.log).
+녹화 없는 운용 모드에서도 XYZ 추종·도달 불가 요청 후 복귀·timeout 감속·
+Quest 재시작·Isaac 재시작/재보정·정상 종료를 확인했습니다:
+[전체 연결 검증](outputs/pipeline_check/validation.json). 제어 tick 중앙값 59.6Hz,
+합성 입력 30Hz에서 IK 처리 중앙값 28.8Hz였습니다.
+실제 헤드셋 착용/무선망과 head 추적 상실에 따른 재보정은 별도 확인 대상입니다.
+
+## 2026-10-04: 손 입력/실제 그리퍼 속도 진단
+
+최근 실제 Quest runtime의 QP 활성 상태 로그 60개를 분석했습니다.
+IK 계산 중앙값 약 1.352ms, 구간별 P95 최대 5.416ms,
+제어 tick 중앙값 58.99Hz, 입력 중앙값 62.50Hz였습니다.
+샘플된 QP 상태 120개는 SOLVED이고, 24개 상태 줄에서 TABLE/BOX LIMIT가
+있었습니다. 이 로그는 초당 상태 샘플이므로 모든 solve 결과를 집계한 것은
+아니며, 기존 로그에 XYZ 시계열이 없어 당시 손/로봇 속도는 복원할 수 없습니다.
+분석 결과: `outputs/motion_speed_check/latest_runtime_summary.json`.
+
+실제 URDF/QP로 양팔 10cm 상승 목표를 오프라인 비교했습니다. 측정 관절이
+reference를 즉시 따라간다는 조건이며 충돌/물리 드라이브/렌더링은 제외했습니다.
+1mm 이내 도달 시간은 현재 설정 3.167s, 관절 속도만 2배 3.167s,
+가속도만 2배 3.117s, 추종 예측 시간 0.5→0.25s는 2.200s였습니다.
+현재 설정의 최대 EE 속도는 이 경로에서 약 4.12cm/s였습니다.
+오차가 0이어도 추종 제약이 관절 속도를 0.05/0.5=0.1rad/s로 제한하므로
+ARM_MAX_VELOCITY만 올리면 해당 경로에서 속도가 바뀌지 않습니다.
+실제 설정 변경 없이 별도 Python 프로세스 안에서만 값을 바꿨습니다.
+비교 결과: `outputs/motion_speed_check/limits_ab_10cm.json`(4cm 비교도 별도 저장).
+
+Quest 진단에 컨트롤러/필터 목표/보조 목표/QP reference/측정 FK의
+벽시계 기준 속도(cm/s), IK 최대 시간, 전체 반복 시간을 추가했습니다.
+Isaac 진단에는 physics Hz와 실시간 진행 비율(rtf)을 추가했습니다.
+수치는 LeRobot state/action/image에 추가하지 않습니다. 관련 회귀 41개 통과,
+속도 단위/중복 피드백/추적 끊김/보정 초기화 확인, 두 실행 파일 문법과
+Quest --help 확인. 실제 손 속도 비교에는 두 프로세스를 재시작한 후 새 입력이 필요합니다.
+
+## 2026-10-05: 고정 공간 Quest passthrough AR
+
+기본 Quest 모드를 로컬 Three.js/WebXR AR로 변경했습니다. 원본 USD의
+표시 메시를 링크 로컬 GLB로 내보내고, Isaac의 실제 측정 링크 19개와
+큐브 pose를 별도 읽기 전용 스트림으로 표시합니다. 표시용 복사본은
+135,707개 삼각형/약 3.31MB이며 원본 물리 모델은 변경하지 않습니다.
+첫 A는 공간 배치만 고정하고, 다음 A는 양손 grip 추적점이 각각 측정 dof7
+원점의 5cm 구 안에 있을 때만 시작합니다. 원점 배치는 에피소드 리셋 후에도
+유지하고 매 시작 A의 입력 pose로 상대 XYZ 기준을 갱신합니다.
+
+- 관련 Python 회귀 **89 passed**. 공간 변환·실제 미터 단위·회전 무시,
+  첫 A 소모/버튼 edge, 5cm 연결 조건, 오래된 입력/모델 불일치 거부,
+  reference reset/앵커 점프 재배치, 기존 IK·충돌 보조·녹화 형식 검사 포함.
+- 실제 Three.js GLTFLoader로 GLB를 읽어 19개 링크 이름·geometry를 검사했고,
+  클라이언트 좌표 변환과 xr-standard grip/button 매핑 검사도 통과했습니다.
+- 실제 Isaac GPU + 합성 WebXR WSS 입력 + 공식 LeRobot 저장 검사 통과.
+  공간 배치 A와 8cm 밖 시작 요청이 녹화를 시작하지 않고, 녹화 A 순간
+  HOME이 유지됩니다. head 이벤트 없이 양팔 약 24mm 상승, B 정지/A 저장,
+  X 폐기, HOME 복귀·새 큐브·공간 유지, 추적 상실 시 REVIEW로 정지하고
+  자동 재개하지 않는 동작을 확인했습니다. `--no-quest-video` 상태에서도
+  데이터 카메라는 정상 저장됩니다.
+- 별도 검증 데이터셋 **1에피소드/52프레임/20fps**를 공식 LeRobot 로더로
+  다시 읽었습니다. state16/action16과 body(front) 640×480, 좌우 wrist
+  320×240 RGB만 존재하며 pi0.5 입력 feature 검사를 통과했습니다.
+  기존 사용자 데이터셋은 수정하지 않았습니다.
+- 실제 Chrome에서 HTTPS 페이지와 3D 장면을 확인했습니다. HTTP 200,
+  JavaScript 오류 0개입니다. 데스크톱에서는 AR 미지원 안내를 표시합니다.
+
+근거: [GPU·WSS 결과](outputs/quest_ar_validation/20261005_012340/result.json),
+[LeRobot 재읽기](outputs/quest_ar_validation/20261005_012340/reload.log),
+[브라우저 결과](outputs/quest_ar_validation/20261005_012340/browser.json),
+[브라우저 화면](outputs/quest_ar_validation/20261005_012340/browser.png).
+
+실제 Quest 3 착용 상태의 passthrough·양안 렌더링·공간 앵커·무선 지연은
+아직 검증하지 않았습니다. Quest Browser에서 방 안 배치 고정, 양손 5cm
+연결, 머리만 회전/이동했을 때 로봇 입력 불변, 저장 후 동일 배치 유지,
+메뉴/추적 상실 시 정지를 확인해야 합니다. 실제 방의 가림·충돌과
+브라우저 재시작 후 영구 앵커 복원은 구현 범위에 포함하지 않습니다.
+
+자동 검사 재현:
+
+```bash
+conda activate env_isaaclab
+cd ~/stkim_ws/quest_robot_isaac
+python -m pytest -q tests/test_quest_ar.py
+python scripts/test_ar_pipeline.py
+```
+
+두 번째 명령은 별도 포트와 새 검증 데이터셋을 사용하며 실제 Isaac GPU를
+실행합니다. 실행 안내는 [README_TELEOP.md](README_TELEOP.md#실행)입니다.
+
+## 2026-10-05: AR 녹화 시작 거부 진단
+
+기존의 포괄적인 `AR start rejected` 문구를 A 순간의 양손 거리와 개별 실패
+조건으로 분리했습니다. 현재 시작 가능 상태도 HUD/터미널/runtime.jsonl에
+표시합니다. HOME의 관절 오차·reference 속도·그리퍼 열림·명령 freshness를
+녹화 상태 응답에만 추가했고 LeRobot feature와 기존 시작 한계는 유지했습니다.
+HUD는 거리 소수점 둘째 자리, 주황/초록/회색 구와 메시 안에서도 보이는
+하늘색 grip 추적점을 표시합니다. A 거부 안내는 8초간 유지합니다.
+
+- 관련 Python 검사 **60 passed**. A를 누른 뒤 손이 이동해도 판정과 안내는
+  A 순간의 pose를 사용하고, 거리 초과와 HOME 미준비를 구분함을 확인했습니다.
+  기존 녹화·버튼·제어 회귀 및 JavaScript/GLTFLoader 검사 통과.
+- 실제 Isaac GPU/WSS 통합 검사 통과: 양손 **8.00cm**에서 HOME이 준비돼
+  있어도 `LEFT_OUTSIDE_5CM, RIGHT_OUTSIDE_5CM`으로 거부됩니다. 연결과
+  시작 준비가 모두 완료된 뒤 녹화 시작, 이동, 저장/폐기, HOME/새 큐브,
+  추적 상실 정지를 확인했습니다. 별도 1에피소드/52프레임과 기존 3개 카메라.
+- 에피소드 READY 직후 첫 HOME 유지 명령이 도착하기 전에는
+  `HOME_COMMAND_STALE`이 잠시 표시될 수 있습니다. 자동 재시작이나 시작
+  요청 예약은 하지 않으며, HUD의 서버 준비 완료 후 새 A를 누릅니다.
+
+근거: [통합 결과](outputs/quest_ar_validation/20261005_015145/result.json).
+실제 Quest 착용 상태의 시인성은 사용자가 확인해야 합니다.
+
+## 2026-10-05: Quest에 URDF 원본 형상 전체 표시
+
+표시 모델의 소스를 기존 USD에서 현재 rev 2.0.1 URDF로 변경했습니다.
+기존 표시 모델은 원본 약 393만 삼각형을 약 14만으로 단순화했지만,
+이제 19개 링크의 visual 20개, **3,931,282개 삼각형을 모두 보존**합니다.
+base의 기둥/상부 바디 두 visual도 포함합니다. 위치와 법선이 같은
+vertex만 합쳐 인덱싱하며 부품·면 제거, 메시 decimation은 하지 않습니다.
+URDF visual origin/scale/색상을 적용하고 각 링크의 전체 visual을 Isaac
+측정 링크 pose로 이동합니다. 제어와 녹화 feature 변경은 없습니다.
+
+- Python **46 passed**: 작은 분리 부품·날카로운 모서리의 법선,
+  visual origin/비균일 scale/반사 처리, AR/기존 제어 검사 포함.
+- 실제 Three.js GLTFLoader로 20개 visual을 로드해 **각 원본 STL의
+  모든 삼각형 vertex 좌표와 GLB의 인덱스 복원 좌표가 정확히 일치**함을 확인.
+  19개 링크 이름과 base 두 부품의 공통 이동도 검사했습니다.
+- 저장된 실제 Isaac HOME 장면과 URDF FK의 19개 링크 프레임을 비교했습니다.
+  최대 위치 차이 0.316mm, 회전 차이 0.052도 이내로 표시 좌표계 호환을 확인했습니다.
+  HOME 목표와 물리 측정값의 작은 추종 오차가 포함된 비교입니다.
+- 실제 Chrome HTTPS 페이지: HTTP 200, JavaScript 오류 0개, visual 20개,
+  3,931,282개 삼각형 로드 및 화면 확인. GLB 약 303MB를 gzip 약 82MB로
+  전송하고 브라우저에서 복원합니다. 형상 압축/단순화는 하지 않습니다.
+
+근거: [브라우저 결과](outputs/quest_ar_validation/full_urdf_view/browser.json),
+[표시 화면](outputs/quest_ar_validation/full_urdf_view/browser.png),
+[모델 명세](outputs/quest_ar/assets/manifest.json).
+실제 Quest 3의 로딩 시간·양안 FPS는 아직 측정하지 않았습니다.
+형상 재생성 후 Quest 송신기를 재시작하고 브라우저 페이지를 새로 고침하세요.

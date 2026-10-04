@@ -3,3 +3,6 @@
 vuer==0.0.60
 params-proto==2.13.2
 pyzmq==26.2.1
+proxsuite==0.7.2
+# Quest AR HTTPS/WSS transport (already present through the legacy XR stack).
+aiohttp==3.10.5

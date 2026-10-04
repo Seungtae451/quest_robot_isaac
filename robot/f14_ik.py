@@ -56,8 +56,11 @@ class F14IK:
         return self.data.oMf[self.left_ee_frame].copy(), self.data.oMf[self.right_ee_frame].copy()
 
     def solve(self, target_left, target_right, arm_q_init, max_iter=200,
-              eps=1e-4, dt=0.2, damping=1e-5, verbose=False):
+              eps=1e-4, dt=0.2, damping=1e-5, verbose=False,
+              limit_margin=0., limit_gain=0.):
         q = self.arm_to_full_q(arm_q_init)
+        low = self.model.lowerPositionLimit[self.arm_q_indices]
+        high = self.model.upperPositionLimit[self.arm_q_indices]
         self.last_diagnostics = None
         for i in range(max_iter + 1):
             pin.forwardKinematics(self.model, self.data, q)
@@ -83,6 +86,26 @@ class F14IK:
             # singular arm postures; dt damps the nonlinear iterative update.
             arm_velocity = jacobian.T @ np.linalg.solve(
                 jacobian @ jacobian.T + damping * np.eye(12), error)
+            if limit_margin > 0:
+                arm_q = self.full_to_arm_q(q)
+                lower_distance = arm_q - low
+                upper_distance = high - arm_q
+                # Penalise outward motion near a limit, not a safe retreat.
+                outward_distance = np.where(arm_velocity < 0, lower_distance, upper_distance)
+                mobility = np.clip(outward_distance / limit_margin, .01, 1.) ** 2
+                weighted_jt = mobility[:, None] * jacobian.T
+                arm_velocity = weighted_jt @ np.linalg.solve(
+                    jacobian @ weighted_jt + damping * np.eye(12), error)
+                if limit_gain > 0:
+                    repel = limit_gain * (
+                        np.clip(1. - lower_distance / limit_margin, 0., 1.)
+                        - np.clip(1. - upper_distance / limit_margin, 0., 1.))
+                    # Redundant elbow/arm motion relieves wrist saturation
+                    # without relaxing any Cartesian or orientation tolerance.
+                    nullspace = np.eye(14) - np.linalg.pinv(jacobian, rcond=1e-6) @ jacobian
+                    arm_velocity += nullspace @ repel
+                # Bound each numerical update as well as the receiver motion.
+                arm_velocity *= min(1., .15 / max(np.max(np.abs(arm_velocity * dt)), 1e-12))
             velocity = np.zeros(self.model.nv)
             velocity[self.arm_v_indices] = arm_velocity
             q = pin.integrate(self.model, q, velocity * dt)

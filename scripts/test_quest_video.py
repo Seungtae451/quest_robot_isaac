@@ -22,9 +22,7 @@ from simulation.quest_view_compositor import compose_quest_view
 
 
 def test_pattern():
-    return compose_quest_view({"left_wrist": np.full((240, 320, 3), (240, 20, 20), np.uint8),
-                               "front": np.full((480, 640, 3), (20, 240, 20), np.uint8),
-                               "right_wrist": np.full((240, 320, 3), (20, 20, 240), np.uint8)}, "Synthetic video diagnostic")
+    return compose_quest_view({'front':np.full((480,640,3),(20,240,20),np.uint8)}, 'Synthetic body-only video diagnostic')
 
 
 async def websocket_self_test(tv):

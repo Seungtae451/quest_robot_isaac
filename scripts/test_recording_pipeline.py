@@ -107,7 +107,7 @@ async def run():
                     "import televuer.televuer as backend; "
                     f"backend.Vuer=partial(Vuer,port={WSS_PORT}); "
                     "from teleop.quest_teleop_server import main; main()")
-                quest = subprocess.Popen([sys.executable, "-u", "-c", bootstrap, "--host-ip", "127.0.0.1",
+                quest = subprocess.Popen([sys.executable, "-u", "-c", bootstrap, "--xr-mode", "immersive", "--host-ip", "127.0.0.1",
                     "--action-port", "15045", "--session-port", "15046", "--video-endpoint", "tcp://127.0.0.1:15596",
                     "--timing-output", str(output / "timing.jsonl")], cwd=ROOT, env=env, stdout=quest_log, stderr=subprocess.STDOUT)
                 async with aiohttp.ClientSession() as session:
@@ -184,6 +184,19 @@ async def run():
                         str(frames), *(str(path) for path in prepared)], capture_output=True, text=True, timeout=10)
                     assert count_videos.returncode == 0, count_videos.stderr
                     result["three_videos_encoded_before_save"] = True
+                    # B requests bounded braking, not an instantaneous stop.
+                    # Extra operator render products change wall/simulation
+                    # speed, so wait for measured settling rather than assume
+                    # a fixed wall-clock delay covers the deceleration.
+                    stable=0
+                    previous=monitor.measured_state.copy()
+                    until=time.monotonic()+8.
+                    while stable<3 and time.monotonic()<until:
+                        await feed(ws,monitor,episodes,.2,displacement=-.125)
+                        current=monitor.measured_state.copy()
+                        stable=stable+1 if np.max(np.abs(current[:14]-previous[:14]))<.001 else 0
+                        previous=current
+                    assert stable>=3,'Robot did not settle after B'
                     stopped = monitor.measured_state.copy()
                     await feed(ws, monitor, episodes, .8, displacement=-.1)
                     np.testing.assert_allclose(monitor.measured_state[:14], stopped[:14], atol=.004)
@@ -229,6 +242,9 @@ async def run():
             assert log.index("Episode reset started; dataset state=SAVING") < log.index("Episode saved;")
             result["home_reset_overlaps_save"] = True
             result["two_new_cube_layouts"] = True
+            image_features=sorted(key for key in info_after['features'] if key.startswith('observation.images.'))
+            assert image_features==['observation.images.front','observation.images.left_wrist','observation.images.right_wrist'],image_features
+            result['dataset_camera_names']=image_features
             # Official reload checks all three actual sensor streams and labels.
             command = [str(ROOT / ".venv-lerobot/bin/python"), str(ROOT / "scripts/validate_lerobot_dataset.py"),
                        "--root", str(dataset_root), "--repo-id", "local/f14_recording_test"]
