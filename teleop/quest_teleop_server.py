@@ -17,6 +17,7 @@ import numpy as np
 from config import teleop_config as cfg
 from robot.f14_config import F14_URDF_PATH, HOME_Q
 from robot.f14_ik import F14IK
+from robot.reachable_ik import ReachableIK
 from robot.gripper import normalize_input
 from teleop.action_protocol import ActionSender
 from teleop.xr_pose import DownwardPoseMapper, average_pose, samples_are_still
@@ -60,6 +61,8 @@ def main(argv=None):
 
     encoding = trigger_encoding(args.trigger_encoding) if args.gripper_input == "trigger" else "standard"
     ik = F14IK(F14_URDF_PATH)
+    reachable = ReachableIK(ik, cfg.IK_FOLLOW_MAX_STEP, cfg.IK_FOLLOW_MAX_JOINT_STEP,
+                            cfg.IK_FOLLOW_RETRIES, cfg.IK_FOLLOW_RETRY_ITER, cfg.IK_FOLLOW_BUDGET_MS)
     print("HOME EE positions:", [p.translation for p in ik.forward_kinematics(HOME_Q)])
     print("Control: controller XYZ displacement + grippers; both EE orientations fixed vertically downward.")
     print(f"Gripper input={args.gripper_input}, encoding={encoding}; semantic 0=open, 1=closed")
@@ -80,6 +83,7 @@ def main(argv=None):
             placeholder = waiting_image()
             send_image_to_xr(tv, placeholder)
             print("Waiting for Quest controller tracking and Isaac receiver...")
+            reach_result = None
             mappers = None
             samples = [[], []]
             settle_start = None
@@ -200,12 +204,12 @@ def main(argv=None):
                     input_ages.append(max(0., start - tv.last_snapshot_controller_time) * 1000)
                     targets = [mapper.target(pose, dt=control_dt) for mapper, pose in zip(mappers, (data.left_wrist_pose, data.right_wrist_pose))]
                     solve_started = time.perf_counter()
-                    solution, success = ik.solve(
+                    reach_result = reachable.solve(
                         *targets, sender.measured_state[:14], max_iter=cfg.IK_MAX_ITER, eps=cfg.IK_EPS,
                         dt=cfg.IK_DT, damping=cfg.IK_DAMPING)
                     solve_times.append((time.perf_counter() - solve_started) * 1000)
                     solves += 1
-                    success = success and np.isfinite(solution).all()
+                    solution, success = reach_result.q, reach_result.success
                     if wrist_test:
                         wrist_test.update(
                             (data.left_wrist_pose, data.right_wrist_pose), targets,
@@ -215,20 +219,20 @@ def main(argv=None):
                         q_current = solution
                     else:
                         q_current = sender.measured_state[:14].astype(float).copy()
-                    state = "ACTIVE" if success else "IK FAIL: braking arms"
+                    state = ("ACTIVE / NEARBY IK" if reach_result.mode == "PROJECTED" else "ACTIVE") if success else "IK HOLD: no feasible step"
                     raw = [getattr(data, f"{side}_ctrl_{args.gripper_input}Value") for side in ("left", "right")]
                     closure = np.array([normalize_input(value, encoding) for value in raw])
                     if args.gripper_input == "trigger":
                         closure = 1.0 - closure
                     alpha = 1. if args.no_filter else timed_filter_alpha(cfg.GRIPPER_FILTER_ALPHA, control_dt, cfg.FILTER_REFERENCE_HZ)
                     grippers += alpha * (closure - grippers)
-                    # IK failure explicitly brakes both arms; gripper remains
+                    # No verified nearby step brakes both arms; gripper remains
                     # independent. Stale tracking stops ALL action transmission.
                     _, still_fresh, _ = tv.snapshot()
                     if still_fresh and sender.ready:
                         sender.send(np.concatenate((q_current, grippers)), hold_arms=not success)
                 last_serial = serial
-                if state != previous_state and not state.startswith(("ACTIVE", "IK FAIL")):
+                if state != previous_state and not state.startswith(("ACTIVE", "IK HOLD")):
                     print(state)
                 previous_state = state
                 interval = .25 if args.verbose else cfg.LOG_INTERVAL
@@ -238,6 +242,11 @@ def main(argv=None):
                     stats = {"monotonic_time": start, "state": state,
                              "input": timing, "control_tick_hz": loops / elapsed,
                              "ik_hz": solves / elapsed, "skipped_events": skipped_events,
+                             "ik_follow": ({"mode": reach_result.mode, "fraction": reach_result.fraction,
+                                            "attempts": reach_result.attempts,
+                                            "remaining_mm": reach_result.remaining_mm,
+                                            "diagnostics": reach_result.diagnostics}
+                                           if reach_result and state.startswith(("ACTIVE", "IK HOLD")) else None),
                              "ik_p50_ms": float(np.median(solve_times)) if solve_times else None,
                              "ik_p95_ms": float(np.percentile(solve_times, 95)) if solve_times else None,
                              "input_age_p95_ms": float(np.percentile(input_ages, 95)) if input_ages else None}
@@ -246,14 +255,18 @@ def main(argv=None):
                     if mappers:
                         info = (f" Lxyz={mappers[0].delta.round(3)} Rxyz={mappers[1].delta.round(3)}"
                                 " orientation=DOWN_FIXED")
+                        if state.startswith("ACTIVE") and reach_result:
+                            info += (f" step={reach_result.mode} fraction={reach_result.fraction:.3f}"
+                                     f" remainingL/R_mm={np.round(reach_result.remaining_mm, 1)}"
+                                     f" attempts={reach_result.attempts}")
                         if args.verbose:
                             info += f" rawL={mappers[0].raw_delta.round(3)} rawR={mappers[1].raw_delta.round(3)} residual={ik.last_error:.3g}"
-                        if state.startswith("IK FAIL") and ik.last_diagnostics:
-                            diagnostic = ik.last_diagnostics
+                        if state.startswith("IK HOLD") and reach_result and reach_result.diagnostics:
+                            diagnostic = reach_result.diagnostics
                             info += (f" posErrL/R_mm={np.round(diagnostic['position_error_mm'], 2)}"
                                      f" rotErrL/R_deg={np.round(diagnostic['rotation_error_deg'], 2)}"
                                      f" nearLimits={diagnostic['near_limits']} iter={diagnostic['iterations']}")
-                    print(f"{state} seq={sender.sequence} IK={'OK' if state == 'ACTIVE' else 'FAIL' if state.startswith('IK FAIL') else '-'}"
+                    print(f"{state} seq={sender.sequence} IK={'NEARBY' if state == 'ACTIVE / NEARBY IK' else 'OK' if state == 'ACTIVE' else 'HOLD' if state.startswith('IK HOLD') else '-'}"
                           f"{info} grip={grippers.round(2)} video={frames / elapsed:.1f}fps age={video.age:.2f}s"
                           f" input={timing['controller']['hz']:.1f}Hz solve={stats['ik_hz']:.1f}Hz"
                           f" ikP95={stats['ik_p95_ms']}ms inputAgeP95={stats['input_age_p95_ms']}ms skipped={skipped_events}")

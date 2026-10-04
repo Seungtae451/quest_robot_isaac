@@ -41,6 +41,12 @@ IK_MAX_ITER = 100
 IK_EPS = 2e-4
 IK_DT = 0.3
 IK_DAMPING = 1e-4
+# Follow from measured FK in small Cartesian steps; shrink on IK failure.
+IK_FOLLOW_MAX_STEP = 0.04  # m, per solve (receiver still limits joint speed)
+IK_FOLLOW_MAX_JOINT_STEP = 0.20  # rad; reject a distant IK branch
+IK_FOLLOW_RETRIES = 4
+IK_FOLLOW_RETRY_ITER = 50
+IK_FOLLOW_BUDGET_MS = 12.0  # stop starting retries after this elapsed budget
 
 # IK produces a destination, never an instantaneous drive target. These limits
 # are always enforced by the Isaac receiver, including with --no-filter.

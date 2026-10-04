@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/NVIDIA/Isaac-GR00T",
+  "commit": "51d4c89f72fda44cbf77285c6a8114b52676b8a1",
+  "source": "gr00t/eval/open_loop_eval.py",
+  "functions": [
+    "plot_trajectory_results",
+    "parse_action_gr00t",
+    "evaluate_single_trajectory"
+  ],
+  "changes": "Only module imports/type annotation evaluation adapted; the three function bodies are unchanged."
+}

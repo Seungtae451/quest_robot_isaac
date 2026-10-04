@@ -67,7 +67,7 @@ Quest 연결 및 보정 후 터미널 안내에 따라 왼손 비틀기 → 위�
 0으로 유지되어야 합니다. 실제 measured에는 관절 추종 오차가 있을 수 있습니다.
 로컬 링크 축 벡터도 JSON에 저장합니다. measured는 Isaac 관절 feedback의 URDF FK이며 최대 60Hz로
 갱신됩니다. 손이 먼저 움직인 순간의 지연과 축 불일치를 혼동하지 말고 끝에서
-잠시 유지한 기록도 비교하세요. `IK FAIL`이면 목표와 실제가 달라지는 것이
+잠시 유지한 기록도 비교하세요. `IK HOLD`이면 목표와 실제가 달라지는 것이
 회전 입력의 영향만을 뜻하지 않습니다.
 
 결과는 `outputs/wrist_axis_check/<시각>/summary.json`과 시험별 JSON에
@@ -146,7 +146,7 @@ action_16 = [*left_arm_q_7, *right_arm_q_7, left_closure, right_closure]
 # 0:7 left radians / 7:14 right radians / 14:16 [0=open, 1=closed]
 ```
 
-UDP `!4sId16f`, 정확히 **80 bytes**: `F16A`, uint32 sequence, float64 timestamp, float32 16개. `F16A`의 팔 각도는 최종 IK 목적지이며, PhysX에 바로 적용하지 않습니다. 같은 크기의 `F16H` packet은 IK 실패/보정 중 팔 감속 정지를 요청하고 gripper 입력은 독립적으로 적용합니다. timestamp는 동일 Linux host의 `time.monotonic()` 초입니다. Wall-clock 조정 영향을 받지 않으며, **다른 PC로 action UDP를 옮길 때는 clock/schema 재설계가 필요**합니다. 외부 LAN에 action/video 포트를 열지 않습니다.
+UDP `!4sId16f`, 정확히 **80 bytes**: `F16A`, uint32 sequence, float64 timestamp, float32 16개. `F16A`의 팔 각도는 검증된 다음 IK 목적지이며, PhysX에 바로 적용하지 않습니다. 같은 크기의 `F16H` packet은 IK 실패/보정 중 팔 감속 정지를 요청하고 gripper 입력은 독립적으로 적용합니다. timestamp는 동일 Linux host의 `time.monotonic()` 초입니다. Wall-clock 조정 영향을 받지 않으며, **다른 PC로 action UDP를 옮길 때는 clock/schema 재설계가 필요**합니다. 외부 LAN에 action/video 포트를 열지 않습니다.
 
 receiver는 길이, magic, finite 값, gripper 범위, USD arm limits, 시간 순서와 0.5초 freshness를 검사합니다. 잘못된 packet은 watchdog을 갱신하지 않습니다. 수신 queue를 비워 가장 최신 유효 packet만 적용합니다. sequence가 0으로 돌아가는 sender 재시작도 monotonic timestamp로 처리합니다.
 
@@ -184,7 +184,7 @@ Yaw도 고정하며 손가락 개폐 축은 world Y에 놓입니다.
 solver는 **XYZ와 고정 방향을 함께 푸는 전체 pose IK**입니다. 방향 조건을
 없애는 방식이 아니며, 5~7번을 포함한 모든 팔 관절이 필요에 따라 움직여
 수직 목표를 유지합니다. 위치 gain은 1이고 5mm neutral deadband가 있습니다.
-최대 이동량으로 목표를 축소하지 않습니다. 새 controller event만 처리하고,
+원래 컨트롤러 목표는 유지하되, IK 목적지는 현재 측정 FK에서 목표 방향으로 최대 4cm씩 따라갑니다. 새 controller event만 처리하고,
 위치·그리퍼 필터 계수는 실제 처리 간격에 따라 보정해 기존 30Hz의 응답
 시간을 유지합니다. `--no-filter`는 입력 필터만 끄며 관절 속도·가속도 제한은
 유지합니다. `--position-only`는 호환 옵션으로, 기본 동작과 동일합니다.
@@ -196,8 +196,8 @@ solver는 **XYZ와 고정 방향을 함께 푸는 전체 pose IK**입니다. 방
 
 rev 2.0.1 URDF, `left/right_dof7_link`의 LOCAL Jacobian DLS를 사용합니다.
 현재 최대 100 iteration, `eps=2e-4`, `dt=.3`, damping `1e-4`입니다.
-**실패 시 partial q를 보내지 않고 `F16H`로 양팔을 감속 정지**합니다.
-실패 로그의 `posErrL/R_mm`, `rotErrL/R_deg`, `nearLimits`, `iter`로
+**IK가 실패하거나 관절 해가 0.20rad 이상 바뀌면 이동량을 절반으로 줄여 최대 4번 재시도**합니다. 추가 탐색은 12ms가 지난 후에는 시작하지 않고 재시도당 최대 50 iteration을 사용합니다. 성공한 해만 FK·관절 한계·수직 방향을 검사해 보냅니다. 유효한 해가 없을 때만 `F16H`로 양팔을 감속 정지하며, 실패한 partial q는 보내지 않습니다.
+`ACTIVE / NEARBY IK`는 축소한 위치로 계속 이동하는 상태입니다. `step`, `fraction`, `remainingL/R_mm`, `attempts`로 원래 목표까지 남은 거리와 탐색 횟수를 확인합니다. `IK HOLD` 로그의 `posErrL/R_mm`, `rotErrL/R_deg`, `nearLimits`, `iter`로
 팔별 잔차와 관절 한계를 구분합니다. trigger는 독립적으로 사용할 수 있습니다.
 
 ## Gripper
@@ -336,7 +336,7 @@ python scripts/test_udp_action.py --send --left-gripper 1 --right-gripper 0 --se
 
 Quest hardware acceptance는 다음을 확인하세요.
 
-1. calibration 후 머리를 고정하고 한 controller를 +10cm/+20cm 이동: `--verbose --no-filter`의 `rawL/rawR`, `Lxyz/Rxyz`가 .10/.20m. `IK FAIL`인 범위에서도 목표를 축소하지 않음.
+1. calibration 후 머리를 고정하고 한 controller를 +10cm/+20cm 이동: `--verbose --no-filter`의 `rawL/rawR`, `Lxyz/Rxyz`가 .10/.20m. 원래 요청 이동량은 유지되지만 실제 IK 목적지는 가능한 작은 단계로 제한됨.
 2. 컨트롤러 XYZ를 고정한 채 각 축을 회전: 팔은 움직이지 않고 양쪽 그리퍼는 아래를 향함. XYZ 이동 중에도 로그는 `orientation=DOWN_FIXED`, 그리퍼 방향 유지.
 3. trigger release=open / press=closed. 좌우가 독립. `--gripper-input squeeze`도 확인.
 4. BODY 중앙 크게, 양쪽 WRIST 작게. 손목 이동에 맞춰 raw camera와 Quest 시야가 동일하게 움직임.
@@ -354,3 +354,5 @@ control, camera, video IPC, LeRobot v3 에피소드 수집과 tabletop 장면이
 로봇 외형 색상은 `robot/appearance.py`의 `PALETTE`에서 관리합니다. 받침 기둥과 중앙 상단 부품을 포함한 로봇 전체는 팔과 같은 블랙, 그리퍼 손가락은 파란색 `#2F90CE`입니다. Isaac에서는 링크별 재질을 적용하며 URDF와 가동범위 HTML에도 같은 색 구성을 반영했습니다.
 
 녹화 시작 A를 누를 때마다 해당 버튼 입력 프레임의 양손 XYZ를 새 중립 기준으로 잡고 이동 필터를 초기화합니다. 대기 중 손을 옮겨도 이전 에피소드의 기준을 사용하지 않습니다. Quest 로그의 `New episode neutral captured at A press`로 매 시작의 기준 갱신을 확인할 수 있습니다. REVIEW에서 저장하는 A는 기준을 바꾸지 않습니다.
+
+수집한 데이터로 로컬 OpenPI π0.5 LoRA 학습을 시작하는 명령과 준비 결과는 [OPENPI_TRAINING.md](OPENPI_TRAINING.md)를 참고하세요.

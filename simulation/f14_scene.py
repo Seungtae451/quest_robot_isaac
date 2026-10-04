@@ -14,7 +14,7 @@ from config import teleop_config as cfg
 from simulation.tabletop import spawn_tabletop
 
 
-def create_scene(camera_debug=False, scene_seed=None):
+def create_scene(camera_debug=False, scene_seed=None, *, cube_contact_sensors=False):
     if not F14_USD_PATH.is_file():
         raise FileNotFoundError(F14_USD_PATH)
     # Procedural ground avoids an external asset-server dependency during
@@ -23,7 +23,7 @@ def create_scene(camera_debug=False, scene_seed=None):
         size=(20., 20., .02), collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(.22, .24, .27)))
     ground.func("/World/Ground", ground, translation=(0., 0., -.01))
-    spawn_tabletop(scene_seed)
+    spawn_tabletop(scene_seed, contact_sensors=cube_contact_sensors)
     light = sim_utils.DomeLightCfg(intensity=3000.)
     light.func("/World/Light", light)
     robot = Articulation(ArticulationCfg(

@@ -110,3 +110,11 @@
 ## 2026-10-04: 매 녹화 시작 A 입력 프레임으로 중립 기준 갱신
 
 버튼 이벤트 큐에 해당 프레임의 양손 pose를 함께 보관합니다. 매 READY→A 시작에서 그 pose로 mapper와 필터를 새로 만들고 실제 로봇 위치를 anchor로 사용합니다. 다른 손 위치로 두 번째 A를 누른 뒤 유지해도 HOME이 유지되는 실제 Isaac/합성 Quest WSS/공식 LeRobot 재로드 검사 통과: `outputs/recording_pipeline_check/20261004_030121/validation.json`의 `every_a_press_recaptures_neutral=true`. 139프레임 저장, 시작 상태 일치, 저장·폐기·리셋 검증. 전체 pytest 75 passed. 실제 헤드셋 입력은 이 자동 검사에 포함하지 않습니다.
+
+## 2026-10-04: IK 실패 시 가까운 성공 위치로 추종
+
+기존 DLS를 유지하고 `robot/reachable_ik.py`에서 현재 측정 FK 기준 최대 4cm 방향 이동을 검사합니다. 실패/0.20rad 초과 관절 해는 이동량을 절반으로 줄여 최대 네 번 재탐색합니다. 유효한 해만 관절 한계·full-pose FK를 검증해 전송합니다. 탐색 시작 제한 12ms(진행 중인 solve를 중단하는 hard deadline은 아님), 재시도 최대 50회. 실제 속도/가속도 제한은 기존 receiver 그대로입니다. 양팔은 공통 이동 비율로 검사하며 유효한 단계가 없을 때만 함께 제동합니다. 충돌 회피/전역 최단거리 투영은 아님.
+
+- 전체 pytest **79 passed**: 실제 URDF의 도달 불가 요청→근처 성공 위치 이동→안쪽 복귀, 실패 partial q 거부, FK/수직 방향·관절 제한, 반복/시간 예산 확인.
+- 실제 Isaac + 합성 Quest WSS + 공식 LeRobot 검사: `outputs/recording_pipeline_check/20261004_033240/validation.json`. 중립에서 +1m의 불가능한 요청에도 검증된 단계로 전진, 요청을 되돌리면 복귀. 수직 자세, 매 A 기준 갱신, 녹화·저장·폐기·느린 HOME 리셋 통과. 기존 데이터 수정 없음.
+- 실제 경계 반복 계산 100회, P95 약 9.6ms / 최대 약 12.6ms(동일 PC, 실제 물리 드라이브 없이 seed 진행). 실시간 비용은 부하와 자세에 따라 달라짐.

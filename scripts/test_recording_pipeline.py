@@ -74,6 +74,7 @@ async def click(ws, monitor, episodes, button, displacement=0.):
 
 async def run():
     with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", WSS_PORT))
     output = ROOT / "outputs/recording_pipeline_check" / time.strftime("%Y%m%d_%H%M%S")
     output.mkdir(parents=True)
@@ -148,6 +149,21 @@ async def run():
                     assert max(tilt) < 3., max(tilt)  # Bounded drives have finite tracking error.
                     result["measured_downward_orientation_error_deg"] = orientation
                     result["motion_max_grasp_axis_tilt_deg"] = max(tilt)
+                    # Deliberately unreachable (+1 m from neutral) request:
+                    # bounded feasible steps must move forward, not accept a
+                    # failed candidate or freeze at the first failed full goal.
+                    before_far = ik.forward_kinematics(monitor.measured_state[:14])
+                    await feed(ws, monitor, episodes, 4., displacement=.91, measured=trajectory)
+                    after_far = ik.forward_kinematics(monitor.measured_state[:14])
+                    assert after_far[0].translation[0] > before_far[0].translation[0] + .015
+                    assert np.isfinite(monitor.measured_state).all()
+                    for pose in after_far:
+                        assert np.rad2deg(np.arccos(np.clip(np.dot(pose.rotation @ GRIPPER_FORWARD_AXIS,
+                                                                  [0,0,-1]), -1, 1))) < 3.
+                    await feed(ws, monitor, episodes, 4., displacement=-.125, measured=trajectory)
+                    returned = ik.forward_kinematics(monitor.measured_state[:14])
+                    assert returned[0].translation[0] < after_far[0].translation[0] - .01
+                    result["unreachable_request_follows_feasible_steps_and_retreats"] = True
                     await click(ws, monitor, episodes, "b", displacement=-.125)
                     await wait_for(ws, monitor, episodes, "REVIEW", displacement=-.125)
                     frames = episodes.status["frames"]

@@ -113,7 +113,10 @@ def main():
     parser.add_argument("--root", type=Path, default=ROOT / "datasets/f14_cube_pickplace")
     parser.add_argument("--repo-id", default="local/f14_cube_pickplace")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/openpi_check" / time.strftime("%Y%m%d_%H%M%S"))
+    parser.add_argument("--max-check-episodes", type=int, help="Sample this many episodes for RGB/model checks; export and statistics still use all episodes")
     args = parser.parse_args()
+    if args.max_check_episodes is not None and args.max_check_episodes < 1:
+        parser.error("--max-check-episodes must be positive")
     source, output = args.root.resolve(), args.output.resolve()
     if not (args.openpi_root / "src/openpi/training/data_loader.py").is_file():
         raise FileNotFoundError(f"OpenPI checkout missing: {args.openpi_root}")
@@ -168,7 +171,12 @@ def main():
     transformed = data_loader.transform_dataset(raw, data_config)
     checked = []
     offset = 0
+    selected = set(range(len(episodes))) if args.max_check_episodes is None else set(np.linspace(
+        0, len(episodes)-1, min(args.max_check_episodes, len(episodes)), dtype=int).tolist())
     for episode in episodes:
+        if episode["episode_index"] not in selected:
+            offset += episode["length"]
+            continue
         for index in (offset, offset + episode["length"] // 2, offset + episode["length"] - 1):
             sample = raw[index]
             np.testing.assert_allclose(sample["observation.state"], states[index], atol=1e-7)
@@ -208,6 +216,8 @@ def main():
     report.update(passed=True, source_unchanged=True, source_version=info["codebase_version"],
         compatibility_version="v2.1", compatibility_root=str(target), episodes=len(episodes),
         frames=info["total_frames"], fps=info["fps"], checked_indices=checked,
+        checked_episodes=sorted(selected),
+        source_fingerprint=hashlib.sha256(json.dumps(before, sort_keys=True).encode()).hexdigest(),
         model_action_dim=32, robot_action_dim=16, action_horizon=50, video_backend="pyav",
         state_batch_shape=list(observation.state.shape), action_batch_shape=list(action_batch.shape),
         images={k:list(v.shape) for k,v in observation.images.items()},

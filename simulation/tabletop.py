@@ -101,7 +101,7 @@ def box_parts():
     ]
 
 
-def spawn_tabletop(seed=None):
+def spawn_tabletop(seed=None, *, contact_sensors=False):
     import isaaclab.sim as sim_utils
 
     poses = sample_cube_poses(seed)
@@ -121,6 +121,7 @@ def spawn_tabletop(seed=None):
         wall.func(f"/World/CollectionBox/{name}", wall, translation=pos)
     cube = sim_utils.CuboidCfg(
         size=(cfg.CUBE_SIZE,) * 3,
+        activate_contact_sensors=contact_sensors,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False, solver_position_iteration_count=8,
             solver_velocity_iteration_count=2, max_depenetration_velocity=1.),
