@@ -1,7 +1,7 @@
 """Isaac-only collider/velocity observations for collection assistance.
 
 No drives, efforts, joint states or dataset fields are written here. The Quest
-sender limits its XYZ target before its existing fixed-orientation IK solve.
+sender limits its XYZ target before its gripper-middle pose IK solve (legacy wrist diagnostics remain optional).
 """
 import itertools
 import time
@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from config import table_assist_config as cfg, tabletop_config as table
-from robot.f14_config import EE_BODY_NAMES, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT
+from robot.f14_config import EE_BODY_NAMES, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT, GRIPPER_CONTROL_OFFSET
 from simulation.tabletop import table_surface_height, box_parts
 
 
@@ -21,11 +21,12 @@ def rotation(q):
 
 
 class TableApproachMonitor:
-    def __init__(self,robot):
+    def __init__(self,robot,*,tcp_mode=False):
         import omni.usd
         from pxr import Usd,UsdGeom,UsdPhysics
         from simulation.cameras import rigid_link_path
         self.robot=robot
+        self.tcp_mode=tcp_mode
         self.ee_ids,names=robot.find_bodies(EE_BODY_NAMES,preserve_order=True)
         self.parts=[]
         self.obstacles=[{'name':'box_'+name,'bounds':[(np.asarray(pos)-np.asarray(size)/2).tolist(),
@@ -99,9 +100,15 @@ class TableApproachMonitor:
         for index,(point,velocity,ee_id,down) in enumerate(zip(points,self.filtered,self.ee_ids,
                                                              (LEFT_EE_DOWN_ROT,RIGHT_EE_DOWN_ROT))):
             wrist=positions[ee_id]
-            local=(point-wrist)@rotation(quaternions[ee_id])
-            offsets=local@down.T
-            part_offsets=[(p-wrist)@rotation(quaternions[ee_id])@down.T for p in part_points[index]]
+            wrist_rotation=rotation(quaternions[ee_id])
+            tcp=wrist+wrist_rotation@GRIPPER_CONTROL_OFFSET
+            if self.tcp_mode:
+                offsets=point-tcp
+                part_offsets=[p-tcp for p in part_points[index]]
+            else:
+                local=(point-wrist)@wrist_rotation
+                offsets=local@down.T
+                part_offsets=[(p-wrist)@wrist_rotation@down.T for p in part_points[index]]
             closing=max(0.,float(-np.min(velocity[:,2])))
             box_gap=min(float(np.linalg.norm(np.maximum(np.maximum(
                 np.asarray(obstacle['bounds'])[0]-p.max(axis=0),
@@ -117,6 +124,9 @@ class TableApproachMonitor:
                          'closing_speed':closing,'clearance':float(point[:,2].min()-table_surface_height()),
                          'predicted_clearance':float((point[:,2]+velocity[:,2]*cfg.LOOKAHEAD_SECONDS).min()-table_surface_height()),
                          'over_table':bool(over_table)})
+            if self.tcp_mode:
+                arms[-1].update(tcp_position=tcp.tolist(),
+                    part_local_points=[((p-tcp)@wrist_rotation).tolist() for p in part_points[index]])
         payload={'enabled':True,'timestamp':timestamp,'surface_z':table_surface_height(),
                  'table_xy':[x-length/2,x+length/2,y-width/2,y+width/2],
                  'obstacles':self.obstacles,'arms':arms}

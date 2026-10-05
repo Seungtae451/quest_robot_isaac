@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
-import {ButtonEdges, readController, worldMatrix, floorPoint, distanceInRobot, startGateText} from './core.mjs';
+import {ButtonEdges, readController, worldMatrix, floorPoint, distanceInRobot, startGateText, graspTip, axisErrorsInRobot} from './core.mjs';
 
 const enter = document.querySelector('#enter'), status = document.querySelector('#status');
 const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
@@ -20,7 +20,7 @@ const world = new THREE.Group(); world.matrixAutoUpdate = false; scene.add(world
 const links = new Map(), cubes = [], parts = [];
 let ws = null, manifest = null, modelReady = false, session = null, latest = null, ui = {};
 let placed = false, space = 0, sequence = 0, placementSequence = Infinity;
-let origin = [0, 0, 0], yaw = 0, shift = [0, 0], anchor = null, anchorGeneration = 0;
+let origin = [0, 0, 0], yaw = Math.PI, shift = [0, 0], anchor = null, anchorGeneration = 0;
 let lastInput = -Infinity, lastFrame = 0, lastHUD = 0, sceneReceived = 0, geometryKey = '';
 let lastStartKey = '', lastStartReceived = -Infinity;
 const edges = new ButtonEdges(), inverse = new THREE.Matrix4();
@@ -37,6 +37,26 @@ const handMarkers = ['left', 'right'].map(() => {
   mesh.renderOrder=30;
   mesh.visible = false; scene.add(mesh); return mesh;
 });
+function alignmentAxes(parent, axes=[0,1], names=['B','A']) {
+  const group=new THREE.Group(); group.visible=false; parent.add(group);
+  for (const [index,axis] of axes.entries()) {
+    const end=new THREE.Vector3(); end.setComponent(axis,.05);
+    const geometry=new THREE.BufferGeometry().setFromPoints([end.clone().negate(),end]);
+    const line=new THREE.Line(geometry,new THREE.LineDashedMaterial({color:0xffffff,
+      transparent:true,opacity:.6,dashSize:.004,gapSize:.003,depthTest:false,depthWrite:false}));
+    line.computeLineDistances(); line.renderOrder=40; group.add(line);
+    const canvas=document.createElement('canvas'); canvas.width=64; canvas.height=64;
+    const ctx=canvas.getContext('2d'); ctx.font='bold 48px sans-serif';ctx.fillStyle='rgba(255,255,255,.7)';
+    ctx.textAlign='center';ctx.fillText(names[index],32,48);
+    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),
+      transparent:true,depthTest:false,depthWrite:false}));
+    label.position.copy(end).multiplyScalar(1.2); label.scale.set(.012,.012,1);label.renderOrder=41;group.add(label);
+  }
+  return group;
+}
+const controllerAxes=[alignmentAxes(scene),alignmentAxes(scene)];
+controllerAxes.forEach(a=>a.matrixAutoUpdate=false);
+const eeAxes=[alignmentAxes(world,[0,2],['A','B']),alignmentAxes(world,[0,2],['A','B'])];
 const originMarker = new THREE.AxesHelper(.25); world.add(originMarker);
 const hudCanvas = document.createElement('canvas'); hudCanvas.width=1024; hudCanvas.height=430;
 const hudTexture = new THREE.CanvasTexture(hudCanvas);
@@ -95,7 +115,14 @@ function applyScene(value) {
   while (cubes.length>value.cubes.length) {
     const mesh=cubes.pop(); world.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose();
   }
-  ['left','right'].forEach((side,i)=>spheres[i].position.fromArray(value.links[side+'_dof7_link'].slice(0,3)));
+  if (manifest?.tcp_offset)
+    ['left','right'].forEach((side,i)=> {
+      const pose=value.links[side+'_dof7_link']; if (!pose) return;
+      const center=graspTip(pose,manifest.tcp_offset);
+      spheres[i].position.fromArray(center); spheres[i].scale.setScalar((manifest.attach_radius??.04)/.05);
+      eeAxes[i].position.fromArray(center); eeAxes[i].quaternion.set(pose[4],pose[5],pose[6],pose[3]);
+      eeAxes[i].visible=Boolean(session);
+    });
 }
 
 async function loadModel(value) {
@@ -167,6 +194,7 @@ enter.onclick=async()=> {
     session.addEventListener('end',()=> {
       clearPlacement('AR 세션 종료'); send({kind:'end'}); session=null;
       hud.visible=false; handMarkers.forEach(m=>m.visible=false);
+      [...controllerAxes,...eeAxes].forEach(a=>a.visible=false);
       document.querySelector('#panel').style.display='block'; enter.disabled=false;
     });
     session.addEventListener('visibilitychange',()=> {
@@ -174,7 +202,7 @@ enter.onclick=async()=> {
     });
     await renderer.xr.setSession(session);
     renderer.xr.getReferenceSpace().addEventListener('reset',()=>clearPlacement('XR 원점 재설정 감지'));
-    clearPlacement('공간 배치 준비'); shift=[0,0]; yaw=0;
+    clearPlacement('공간 배치 준비'); shift=[0,0]; yaw=(manifest?.placement_yaw_deg??180)*Math.PI/180;
     document.querySelector('#panel').style.display='none';
   } catch(error) {status.textContent=`AR 시작 실패: ${error.message}`; session=null; enter.disabled=false;}
 };
@@ -192,7 +220,9 @@ async function createAnchor(frame) {
 
 function updateHUD(viewer, left, right, now) {
   if (!viewer) {hud.visible=false; return;}
-  hud.visible=true;
+  // Keep scene/attachment updates running, but remove the guidance panel
+  // from the headset during collection. It returns on stop/review/reset.
+  hud.visible=ui.episode?.state!=='RECORDING';
   const p=viewer.transform.position, q=viewer.transform.orientation;
   const rotation=new THREE.Quaternion(q.x,q.y,q.z,q.w);
   hud.position.set(0,-.28,-.9).applyQuaternion(rotation).add(new THREE.Vector3(p.x,p.y,p.z));
@@ -205,17 +235,20 @@ function updateHUD(viewer, left, right, now) {
   const stale=(ui.scene_age ?? Infinity)+(now-sceneReceived)/1000>.5;
   if (stale) title='ISAAC SCENE STALE / HOLD';
   context.fillText(title,24,55);
-  let distances=[];
+  let distances=[],axisErrors=[];
   ['left','right'].forEach((side,i)=> {
-    const hand=i===0?left:right, wrist=latest?.links?.[side+'_dof7_link'];
-    const d=hand?.tracked && !hand.emulated && wrist ? distanceInRobot(hand.matrix,inverse.elements,wrist):Infinity;
+    const hand=i===0?right:left, wrist=latest?.links?.[side+'_dof7_link'];
+    const tip=wrist && manifest?.tcp_offset ? graspTip(wrist,manifest.tcp_offset) : null;
+    const d=hand?.tracked && !hand.emulated && tip ? distanceInRobot(hand.matrix,inverse.elements,tip):Infinity;
     distances.push(d);
-    spheres[i].material.color.setHex(!Number.isFinite(d)||stale?0x89939c:d<=.05+1e-9?0x49ee9b:0xffba55);
+    const angles=hand?.tracked && wrist?axisErrorsInRobot(hand.matrix,inverse.elements,wrist,side):[Infinity,Infinity];
+    axisErrors.push(angles);
+    spheres[i].material.color.setHex(!Number.isFinite(d)||stale?0x89939c:d<=(manifest?.attach_radius??.04)+1e-9?0x49ee9b:0xffba55);
     spheres[i].visible=Boolean(latest) && ui.episode?.state!=='RECORDING';
   });
   context.font='32px sans-serif'; context.fillStyle='#b7d9ed';
-  context.fillText(`L: ${Number.isFinite(distances[0])?(distances[0]*100).toFixed(2):'--'} cm   R: ${Number.isFinite(distances[1])?(distances[1]*100).toFixed(2):'--'} cm   <= 5.00 cm`,24,110);
-  context.fillText('하늘색 점 = 컨트롤러 추적점 · 양쪽 구가 초록색이면 거리 OK',24,158);
+  context.fillText(`L: ${Number.isFinite(distances[0])?(distances[0]*100).toFixed(2):'--'} cm   R: ${Number.isFinite(distances[1])?(distances[1]*100).toFixed(2):'--'} cm   <= ${(manifest?.attach_radius??.04)*100} cm`,24,110);
+  context.fillText(`A/B 정렬 오차 L: ${axisErrors[0].map(a=>Number.isFinite(a)?a.toFixed(1):'--').join('/')}°  R: ${axisErrors[1].map(a=>Number.isFinite(a)?a.toFixed(1):'--').join('/')}°  (시작 각도 제한 없음)`,24,158);
   const waiting=placed && (!ui.episode || ui.episode.state==='READY');
   context.fillStyle=waiting && !ui.start_gate?.allowed ? '#ffba55' : '#b7d9ed';
   context.fillText(waiting?`서버: ${startGateText(ui.start_gate)}`:(ui.control ?? 'Waiting for Isaac').slice(0,58),24,206);
@@ -252,7 +285,7 @@ renderer.setAnimationLoop((now,frame)=> {
         shift[0]+=(Math.abs(left.axes[0])>.2?left.axes[0]:0)*dt*.3;
         shift[1]+=(Math.abs(left.axes[1])>.2?left.axes[1]:0)*dt*.3;
       }
-      origin=[floor[0]+shift[0],0,floor[2]+shift[1]]; setWorld(origin,yaw);
+      origin=[floor[0]+shift[0],manifest?.placement_height??.7,floor[2]+shift[1]]; setWorld(origin,yaw);
       if (presses[0]==='a' && modelReady && ws?.readyState===WebSocket.OPEN) {
         placed=true; placementSequence=sequence; createAnchor(frame);
       }
@@ -270,6 +303,8 @@ renderer.setAnimationLoop((now,frame)=> {
     originMarker.visible=!placed;
     [left,right].forEach((hand,i)=> {
       handMarkers[i].visible=Boolean(hand?.tracked);
+      controllerAxes[i].visible=Boolean(hand?.tracked);
+      if (hand?.tracked) {controllerAxes[i].matrix.fromArray(hand.matrix);controllerAxes[i].matrixWorldNeedsUpdate=true;}
       if (hand?.tracked) handMarkers[i].position.set(hand.matrix[12],hand.matrix[13],hand.matrix[14]);
     });
     if (now-lastInput>=1000/60 || presses.length) {

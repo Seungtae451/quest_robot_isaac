@@ -22,8 +22,9 @@ sys.path.insert(0, str(ROOT))
 from teleop.action_protocol import ActionSender
 from teleop.episode_protocol import EpisodeClient
 from teleop.ar_world import world_matrix
-from robot.f14_config import HOME_Q, F14_URDF_PATH
+from robot.f14_config import HOME_Q, F14_URDF_PATH, GRIPPER_CONTROL_OFFSET
 from robot.f14_ik import F14IK
+from robot.tool_frame import controller_ee_basis, control_position, rotation_wxyz
 
 PORT = 18013
 ACTION_PORT, EPISODE_PORT = 16045, 16046
@@ -39,6 +40,7 @@ class Driver:
         self.space = 1
         self.world = world_matrix([1., 0., -.5], .7)
         self.neutral = None
+        self.rotations = None
         self.reader = asyncio.create_task(self.read())
 
     async def read(self):
@@ -48,10 +50,11 @@ class Driver:
                 if value.get('kind') == 'state':
                     self.scene, self.ui = value['scene'], value['ui']
                     if self.scene and self.neutral is None:
-                        self.neutral = np.array([self.scene['links'][f'{side}_dof7_link'][:3]
-                                                 for side in ('left', 'right')])
+                        self.rotations = [rotation_wxyz(self.scene['links'][f'{side}_dof7_link'][3:]) @ controller_ee_basis(side).T for side in ('right','left')]
+                        self.neutral = np.array([control_position(self.scene['links'][f'{side}_dof7_link'])
+                                                 for side in ('right', 'left')])
 
-    async def feed(self, seconds, *, positions=None, buttons=(), head=True, visible=True):
+    async def feed(self, seconds, *, positions=None, buttons=(), head=True, visible=True, rotations=None):
         until = time.monotonic()+seconds
         while time.monotonic()<until:
             message = {'kind':'input', 'sequence':self.sequence, 'space':self.space,
@@ -60,6 +63,7 @@ class Driver:
             self.sequence += 1
             for i,side in enumerate(('left','right')):
                 pose = np.eye(4)
+                if self.rotations is not None: pose[:3,:3] = (rotations if rotations is not None else self.rotations)[i]
                 pose[:3,3] = (positions if positions is not None else self.neutral)[i] if self.neutral is not None else [0,0,0]
                 pose = self.world @ pose
                 message[side] = {'matrix':pose.flatten(order='F').tolist(),'tracked':True,'emulated':False,
@@ -169,22 +173,39 @@ async def run():
                         assert episodes.status['state']=='READY'
                         rejection = driver.ui['last_start']
                         assert not rejection['allowed']
-                        assert rejection['reasons'] == ['LEFT_OUTSIDE_5CM','RIGHT_OUTSIDE_5CM'], rejection
+                        assert rejection['reasons'] == ['LEFT_OUTSIDE_4CM','RIGHT_OUTSIDE_4CM'], rejection
                         assert min(rejection['distances_m']) > .05
                         result['start_rejection_reports_press_distance_and_exact_reason'] = rejection
                         np.testing.assert_allclose(monitor.measured_state[:14],HOME_Q,atol=.015)
-                        result['placement_a_consumed_and_outside_5cm_rejected']=True
+                        result['placement_a_consumed_and_outside_4cm_rejected']=True
+                        import pinocchio as pin
                         await driver.feed(.3)
                         await driver.wait_start_ready()
                         await driver.click('a'); await driver.wait('RECORDING')
                         await driver.feed(.3)
                         np.testing.assert_allclose(monitor.measured_state[:14],HOME_Q,atol=.015)
                         result['recording_a_has_no_start_jump']=True
+                        turned=[r.copy() for r in driver.rotations]
+                        turned[0]=pin.exp3(np.array([.10,0.,0.]))@turned[0]
+                        await driver.feed(2.5,rotations=turned)
+                        measured=F14IK(F14_URDF_PATH,ee_offset=GRIPPER_CONTROL_OFFSET).forward_kinematics(monitor.measured_state[:14])
+                        error=float(np.linalg.norm(pin.log3(measured[1].rotation.T@(turned[0]@controller_ee_basis('right')))))
+                        assert error<.03,error
+                        result['rotation_following_error_rad']=error
+                        await driver.feed(2.)
+                        asymmetric=driver.neutral.copy()
+                        asymmetric[0]+=[.025,0.,.025]  # physical LEFT -> robot RIGHT, +world X/Z
+                        await driver.feed(1.5,positions=asymmetric,head=False)
+                        tips=F14IK(F14_URDF_PATH,ee_offset=GRIPPER_CONTROL_OFFSET).forward_kinematics(monitor.measured_state[:14])
+                        delta=np.array([p.translation-driver.neutral[1-i] for i,p in enumerate(tips)])
+                        assert np.linalg.norm(delta[0])<.004,delta
+                        assert delta[1,0]>.005 and delta[1,2]>.005,delta
+                        result['physical_left_moves_robot_right_without_xyz_mirroring_m']=delta.tolist()
                         moved=driver.neutral.copy(); moved[:,2]+=.025
                         await driver.feed(2.,positions=moved,head=False)
                         assert episodes.status['state']=='RECORDING'
-                        fk=F14IK(F14_URDF_PATH).forward_kinematics(monitor.measured_state[:14])
-                        dz=[float(p.translation[2]-driver.neutral[i,2]) for i,p in enumerate(fk)]
+                        fk=F14IK(F14_URDF_PATH,ee_offset=GRIPPER_CONTROL_OFFSET).forward_kinematics(monitor.measured_state[:14])
+                        dz=[float(p.translation[2]-driver.neutral[1-i,2]) for i,p in enumerate(fk)]
                         assert min(dz)>.001,dz
                         result['head_independent_control_rise_m']=dz
                         await driver.click('b',positions=moved); await driver.wait('REVIEW')

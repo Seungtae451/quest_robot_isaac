@@ -98,7 +98,7 @@ part of this teleoperation loop.
         from config import table_assist_config
         if args.record and table_assist_config.ENABLED and not args.no_table_assist:
             from simulation.table_approach_monitor import TableApproachMonitor
-            table_assist = TableApproachMonitor(robot)
+            table_assist = TableApproachMonitor(robot, tcp_mode=True)
         limits = robot.data.joint_pos_limits[0, arm_ids].cpu().numpy()
         limits = np.sort(limits * USD_ARM_SIGNS[:, None], axis=1)
         receiver = ActionReceiver(cfg.ACTION_UDP_HOST, args.action_port, limits)
@@ -286,7 +286,9 @@ part of this teleoperation loop.
                 checks[f"step_{steps}"] = {"arm_error_rad": arm_error, "gripper_error": grip_error}
                 if steps == 80:
                     actual = robot.data.body_pos_w[0, ee_ids].cpu().numpy()
-                    reference = np.array([[.4, .18, .57], [.4, -.18, .57]])
+                    # Independent URDF FK reference for the configured mirrored HOME.
+                    reference = np.array([[.32223579, .31874147, .56739687],
+                                          [.32223767, -.31873956, .56739687]])
                     errors = np.linalg.norm(actual - reference, axis=1)
                     if np.max(errors) > .001:
                         raise AssertionError(f"HOME FK mismatch: {errors}")

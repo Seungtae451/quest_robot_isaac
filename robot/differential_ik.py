@@ -19,14 +19,17 @@ from robot.f14_config import LEFT_JOINT_NAMES, RIGHT_JOINT_NAMES
 class DifferentialIK:
     ROWS = 13  # 7 joint bounds + 3 angular bounds + 3 merged collision axes
 
-    def __init__(self, ik):
+    def __init__(self, ik, *, position_only=False, rotating_geometry=False):
         self.ik = ik
+        self.position_only = position_only
+        self.rotating_geometry = position_only or rotating_geometry
+        self.rows = 256 if self.rotating_geometry else self.ROWS
         self.data = ik.model.createData()
         self.lower = ik.model.lowerPositionLimit[ik.arm_q_indices].copy()
         self.upper = ik.model.upperPositionLimit[ik.arm_q_indices].copy()
         self.reference = None
         self.velocity = np.zeros(14)
-        self.solvers = [proxsuite.proxqp.dense.QP(7, 0, self.ROWS) for _ in range(2)]
+        self.solvers = [proxsuite.proxqp.dense.QP(7, 0, self.rows) for _ in range(2)]
         self.initialized = [False, False]
         for qp in self.solvers:
             qp.settings.eps_abs = 1e-7
@@ -42,13 +45,19 @@ class DifferentialIK:
         self.velocity.fill(0.)
         self.initialized = [False, False]
 
-    @staticmethod
-    def _geometry(feedback, side):
+    def _geometry(self, feedback, side, pose):
         if feedback is None or not feedback.get('enabled'):
             return None
         arm = feedback['arms'][side]
         parts = np.asarray(arm.get('part_bounds', [arm['offset_bounds']]), float)
         obstacles = feedback['obstacles']
+        local = None
+        if self.rotating_geometry:
+            local = [np.asarray(p,float) for p in arm['part_local_points']]
+            if not local or any(p.ndim!=2 or p.shape[1]!=3 or not len(p) or not np.isfinite(p).all() for p in local):
+                raise ValueError('Invalid rotating gripper collision envelopes')
+            offsets = [p @ pose.rotation.T for p in local]
+            parts = np.asarray([[p.min(0),p.max(0)] for p in offsets])
         if (parts.ndim != 3 or parts.shape[1:] != (2, 3) or not len(parts)
                 or not np.isfinite(parts).all() or np.any(parts[:, 1] < parts[:, 0])):
             raise ValueError('Invalid QP collision envelopes')
@@ -57,7 +66,38 @@ class DifferentialIK:
             if (bounds.shape != (2, 3) or not np.isfinite(bounds).all()
                     or np.any(bounds[1] <= bounds[0])):
                 raise ValueError('Invalid QP obstacle')
-        return parts, obstacles
+        return parts, obstacles, local
+
+    @staticmethod
+    def _rotating_collision_rows(pose, jacobian, geometry):
+        """Constrain corner velocities, including passive wrist rotation.
+
+        Choose one separating face per part/solid, retaining the box's open top.
+        Every corner must remain on that safe side of the selected face.
+        """
+        if geometry is None:
+            return []
+        _, obstacles, local = geometry
+        rows=[]
+        for part in local:
+            offsets=part@pose.rotation.T
+            points=offsets+pose.translation
+            for obstacle in obstacles:
+                bounds=np.asarray(obstacle['bounds'],float)
+                low=bounds[0]-assist_cfg.MINIMUM_CLEARANCE
+                high=bounds[1]+assist_cfg.MINIMUM_CLEARANCE
+                gaps=np.r_[low-points.max(0),points.min(0)-high]
+                face=int(np.argmax(gaps)); axis=face%3
+                positive=face>=3
+                for point,offset in zip(points,offsets):
+                    # v(point) = v(TCP) + omega x (point - TCP).
+                    cross=np.array([[0,-offset[2],offset[1]],
+                                    [offset[2],0,-offset[0]],[-offset[1],offset[0],0]])
+                    row=(jacobian[:3]-cross@jacobian[3:])[axis]
+                    gap=point[axis]-high[axis] if positive else low[axis]-point[axis]
+                    speed=max(float(gap),0.)/assist_cfg.LOOKAHEAD_SECONDS
+                    rows.append((row,-speed,np.inf) if positive else (row,-np.inf,speed))
+        return rows
 
     @staticmethod
     def _collision_rows(position, world_jacobian, geometry):
@@ -99,11 +139,30 @@ class DifferentialIK:
         # first-order rotation/collision constraints of the QP.
         old_error = np.linalg.norm(pin.log3(before.rotation.T @ target.rotation))
         new_error = np.linalg.norm(pin.log3(after.rotation.T @ target.rotation))
-        if new_error > max(cfg.IK_EPS, old_error) + 2e-6:
+        if not self.position_only and new_error > max(cfg.QP_NONLINEAR_ROTATION_TOLERANCE, old_error) + 2e-6:
             return False
         if geometry is not None:
+            if self.rotating_geometry:
+                _, obstacles, local = geometry
+                # Check the actual rotated envelopes, not a downward template.
+                # Margin overlap may escape, but cannot deepen. Intermediate
+                # poses prevent a thin wall from being crossed in one step.
+                delta=pin.log3(before.rotation.T@after.rotation)
+                for part in local:
+                    old=part@before.rotation.T+before.translation
+                    for obstacle in obstacles:
+                        bounds=np.asarray(obstacle['bounds'],float)
+                        def gap(points):
+                            return float(np.max(np.r_[bounds[0]-points.max(0),points.min(0)-bounds[1]]))-assist_cfg.MINIMUM_CLEARANCE
+                        minimum=min(0.,gap(old))-2e-7
+                        for fraction in (.25,.5,.75,1.):
+                            rot=before.rotation@pin.exp3(delta*fraction)
+                            points=part@rot.T+before.translation+fraction*(after.translation-before.translation)
+                            if gap(points)<minimum:
+                                return False
+                return True
             corrected, blocked = limit_obstacle_path(
-                before.translation, after.translation, *geometry, np.zeros((2, 3)))
+                before.translation, after.translation, *geometry[:2], np.zeros((2, 3)))
             if blocked and np.linalg.norm(corrected - after.translation) > 1e-7:
                 return False
         return True
@@ -128,7 +187,7 @@ class DifferentialIK:
             section = slice(side * 7, (side + 1) * 7)
             q = self.reference[section]
             previous = self.velocity[section].copy()
-            geometry = self._geometry(feedback, side)
+            geometry = self._geometry(feedback, side, pose)
             jac = pin.computeFrameJacobian(self.ik.model, self.data, full_q, frame,
                 pin.ReferenceFrame.LOCAL)[:, self.ik.arm_v_indices[section]]
             world_jac = pose.rotation @ jac[:3]
@@ -136,13 +195,17 @@ class DifferentialIK:
             desired_xyz = cfg.QP_POSITION_GAIN * (target.translation - pose.translation)
             desired_xyz *= min(1., cfg.QP_MAX_CARTESIAN_SPEED / max(np.linalg.norm(desired_xyz), 1e-12))
             desired = np.r_[pose.rotation.T @ desired_xyz, cfg.QP_ORIENTATION_GAIN * error]
-            weighted = jac * np.array([1., 1., 1., 3., 3., 3.])[:, None]
-            desired *= np.array([1., 1., 1., 3., 3., 3.])
+            task_jac = jac[:3] if self.position_only else jac
+            weighted = jac[:3] if self.position_only else jac * np.array([1., 1., 1., cfg.QP_ORIENTATION_WEIGHT, cfg.QP_ORIENTATION_WEIGHT, cfg.QP_ORIENTATION_WEIGHT])[:, None]
+            desired = desired[:3] if self.position_only else desired * np.array([1., 1., 1., cfg.QP_ORIENTATION_WEIGHT, cfg.QP_ORIENTATION_WEIGHT, cfg.QP_ORIENTATION_WEIGHT])
             distance_low, distance_high = q - self.lower[section], self.upper[section] - q
             repel = cfg.QP_LIMIT_GAIN * (np.clip(1. - distance_low / cfg.IK_LIMIT_MARGIN, 0., 1.)
                                       - np.clip(1. - distance_high / cfg.IK_LIMIT_MARGIN, 0., 1.))
             # Only redundant motion is used for posture relief.
-            repel = (np.eye(7) - np.linalg.pinv(jac, rcond=1e-6) @ jac) @ repel
+            repel = (np.eye(7) - np.linalg.pinv(task_jac, rcond=1e-6) @ task_jac) @ repel
+            if self.position_only:
+                # Do not rotate idle hands just to optimise posture at A/HOME.
+                repel *= min(1.,np.linalg.norm(target.translation-pose.translation)/.01)
             regularization = cfg.QP_REGULARIZATION
             h = weighted.T @ weighted + regularization * np.eye(7)
             g = -weighted.T @ desired - regularization * repel
@@ -162,16 +225,27 @@ class DifferentialIK:
             lag = q - measured_q[section]
             # Predictively slow increasing lag; retreat remains available even
             # when the measured actuator is blocked past the permitted lag.
-            low = np.maximum(low, np.minimum(0., (-cfg.ARM_MAX_TRACKING_ERROR - lag) / cfg.QP_LAG_HORIZON))
-            high = np.minimum(high, np.maximum(0., (cfg.ARM_MAX_TRACKING_ERROR - lag) / cfg.QP_LAG_HORIZON))
+            lag_horizon = max(dt, cfg.QP_LAG_HORIZON)
+            low = np.maximum(low, np.minimum(0., (-cfg.ARM_MAX_TRACKING_ERROR - lag) / lag_horizon))
+            high = np.minimum(high, np.maximum(0., (cfg.ARM_MAX_TRACKING_ERROR - lag) / lag_horizon))
+            # With fast acceleration, also reserve stopping distance before
+            # the drive-lag boundary. Keeps a blocked actuator's reference bounded.
+            low = np.maximum(low, -braking(cfg.ARM_MAX_TRACKING_ERROR + lag))
+            high = np.minimum(high, braking(cfg.ARM_MAX_TRACKING_ERROR - lag))
             allowance = np.maximum(np.abs(error), cfg.IK_EPS / np.sqrt(3))
             rows = [(np.eye(7)[i], low[i], high[i]) for i in range(7)]
-            rows += [(jac[3+i], (error[i] - allowance[i]) / dt,
-                       (error[i] + allowance[i]) / dt) for i in range(3)]
-            rows += self._collision_rows(pose.translation, world_jac, geometry)
-            if len(rows) > self.ROWS:
+            if not self.position_only:
+                rows += [(jac[3+i], (error[i] - allowance[i]) / dt,
+                           (error[i] + allowance[i]) / dt) for i in range(3)]
+            if self.rotating_geometry:
+                world_full_jac=pose.rotation@jac.reshape(2,3,7)
+                world_full_jac=world_full_jac.reshape(6,7)
+                rows += self._rotating_collision_rows(pose,world_full_jac,geometry)
+            else:
+                rows += self._collision_rows(pose.translation, world_jac, geometry[:2] if geometry else None)
+            if len(rows) > self.rows:
                 raise ValueError('Too many collision constraints')
-            c = np.zeros((self.ROWS, 7)); l = np.full(self.ROWS, -np.inf); u = np.full(self.ROWS, np.inf)
+            c = np.zeros((self.rows, 7)); l = np.full(self.rows, -np.inf); u = np.full(self.rows, np.inf)
             for i, (row, lo, hi) in enumerate(rows):
                 c[i], l[i], u[i] = row, lo, hi
             qp = self.solvers[side]
@@ -233,9 +307,10 @@ class DifferentialIK:
         actual = self.ik.forward_kinematics(self.reference)
         measured = self.ik.forward_kinematics(measured_q)
         self.ik.last_error = float(np.linalg.norm(np.concatenate([
-            pin.log6(a.inverse() * t).vector for a, t in zip(actual, targets)])))
+            t.translation-a.translation if self.position_only else pin.log6(a.inverse() * t).vector
+            for a, t in zip(actual, targets)])))
         remaining = [float(np.linalg.norm(a.translation - t.translation) * 1000) for a, t in zip(measured, targets)]
-        diagnostics = {'arm_status': statuses, 'arm_success': accepted,
+        diagnostics = {'arm_status': statuses, 'arm_success': accepted, 'position_only': self.position_only,
             'iterations': max(iterations), 'position_error_mm': remaining,
             'reference_position_m': [a.translation.tolist() for a in actual],
             'measured_position_m': [a.translation.tolist() for a in measured],

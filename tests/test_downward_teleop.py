@@ -5,7 +5,7 @@ import pytest
 
 from config import teleop_config as cfg
 from robot.f14_config import (
-    F14_URDF_PATH, GRIPPER_FORWARD_AXIS, HOME_Q, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT,
+    F14_URDF_PATH, GRIPPER_FORWARD_AXIS, LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT,
 )
 from robot.f14_ik import F14IK
 from teleop.xr_pose import DownwardPoseMapper, samples_are_still
@@ -56,15 +56,15 @@ def test_downward_position_filter_is_independent_of_input_rotation_and_rate():
         np.testing.assert_allclose(mappers[0].delta, mappers[1].delta, atol=1e-12)
 
 
-def test_home_and_xyz_ik_keep_the_physical_grasp_axis_down():
+def test_legacy_downward_pose_and_xyz_ik_keep_the_physical_grasp_axis_down(downward_home_q):
     ik = F14IK(F14_URDF_PATH)
-    home = ik.forward_kinematics(HOME_Q)
+    home = ik.forward_kinematics(downward_home_q)
     for pose, rotation, position in zip(home, (LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT),
             ([.4, .18, .57], [.4, -.18, .57])):
         np.testing.assert_allclose(pose.translation, position, atol=1e-8)
         np.testing.assert_allclose(pose.rotation, rotation, atol=1e-8)
         np.testing.assert_allclose(pose.rotation @ GRIPPER_FORWARD_AXIS, [0, 0, -1], atol=1e-8)
-    q = HOME_Q.copy()
+    q = downward_home_q.copy()
     for left_delta, right_delta in (
         ([.03, 0, 0], [-.02, 0, 0]),
         ([.06, .03, -.05], [.05, -.025, -.04]),

@@ -1,4 +1,4 @@
-"""Process A: fixed-world Quest AR grips -> downward differential IK -> UDP 16D.
+"""Process A: fixed-world Quest AR grips -> XYZ grasp-tip differential IK -> UDP 16D.
 
 AR mirrors measured Isaac links/cubes over a separate read-only stream. Legacy
 2D TeleVuer remains opt-in. This process NEVER imports Isaac Sim.
@@ -14,12 +14,13 @@ from pathlib import Path
 import numpy as np
 
 from config import teleop_config as cfg
-from robot.f14_config import F14_URDF_PATH, HOME_Q
+from config import table_assist_config as assist_cfg
+from robot.f14_config import F14_URDF_PATH, HOME_Q, GRIPPER_CONTROL_OFFSET
 from robot.f14_ik import F14IK
 from robot.differential_ik import DifferentialIK
 from robot.gripper import normalize_input
 from teleop.action_protocol import ActionSender
-from teleop.xr_pose import DownwardPoseMapper, average_pose, samples_are_still
+from teleop.xr_pose import TranslationPoseMapper, WorldPoseMapper, front_facing_controls, average_pose, samples_are_still
 from teleop.input_timing import timed_filter_alpha
 from teleop.motion_speed import MotionSpeedMonitor
 from teleop.episode_protocol import EpisodeClient
@@ -41,9 +42,9 @@ def parser():
     result.add_argument("--gripper-input", choices=("trigger", "squeeze"), default="trigger")
     result.add_argument("--trigger-encoding", choices=("auto", "legacy-inverted-10", "standard"), default="auto")
     result.add_argument("--no-filter", action="store_true")
-    result.add_argument("--position-only", action="store_true", help="Compatibility option: XYZ with fixed downward grippers is now always enabled")
+    result.add_argument("--position-only", action="store_true", help="Ignore controller rotation (default follows position and rotation)")
     result.add_argument("--verbose", action="store_true")
-    result.add_argument("--wrist-axis-test", action="store_true", help="Observe controller rotation vs fixed downward targets; N + Enter starts each trial (rotation never commands the robot)")
+    result.add_argument("--wrist-axis-test", action="store_true", help="Observe controller rotation vs XYZ-only targets; N + Enter starts each trial (rotation never commands the robot)")
     result.add_argument("--wrist-test-dir", type=Path, default=Path("outputs/wrist_axis_check"))
     result.add_argument("--timing-output", type=Path, default=Path("outputs/quest_input_check/runtime.jsonl"),
                         help="Append input-rate, processing-latency and IK timing measurements")
@@ -72,10 +73,12 @@ def main(argv=None):
         from teleop.televuer_adapter import QuestInterface, trigger_encoding
         from teleop.xr_video import VideoSubscriber, send_image_to_xr, waiting_image
         encoding = trigger_encoding(args.trigger_encoding) if args.gripper_input == "trigger" else "standard"
-    ik = F14IK(F14_URDF_PATH)
-    reachable = DifferentialIK(ik)
+    ik = F14IK(F14_URDF_PATH, ee_offset=GRIPPER_CONTROL_OFFSET)
+    reachable = DifferentialIK(ik, position_only=args.position_only, rotating_geometry=True)
+    PoseMapper = TranslationPoseMapper if args.position_only else WorldPoseMapper
     print("HOME EE positions:", [p.translation for p in ik.forward_kinematics(HOME_Q)])
-    print("Control: controller XYZ displacement + grippers; both EE orientations fixed vertically downward.")
+    print("Control: controller XYZ displacement + grippers; grasp-tip XYZ only, orientation FREE; right hand -> left arm, left hand -> right arm.")
+    print(f"Translation mapping: robot XYZ signs={cfg.TRANSLATION_AXIS_SIGNS}; AR world-aligned XYZ (no extra inversion); source={Path(__file__).resolve()}")
     print("IK: Pinocchio + ProxQP; independent arms, bounded differential joint references.")
     print(f"Gripper input={args.gripper_input}, encoding={encoding}; semantic 0=open, 1=closed")
     print("R + Enter = recalibrate at held robot pose. Ctrl+C = clean shutdown.")
@@ -127,6 +130,7 @@ def main(argv=None):
                 restarted = sender.poll_feedback()
                 episodes.poll()
                 data, fresh, serial = tv.snapshot()
+                data = front_facing_controls(data)
                 if ar_mode:
                     if tv.control_epoch != ar_epoch:
                         ar_epoch = tv.control_epoch
@@ -141,6 +145,8 @@ def main(argv=None):
                     if episodes.available and episodes.status['state'] not in ('RECORDING', 'STARTING', 'READY'):
                         ar_active = False
                 for button, press_poses in tv.recording_button_events(with_poses=True):
+                    if press_poses is not None:
+                        press_poses = press_poses[::-1].copy()  # physical hands -> robot arms
                     can_start = (press_poses is not None and mappers is not None and fresh and sender.ready and not restarted
                                  and episodes.status.get("start_allowed", False)) if episodes.available else False
                     if ar_mode:
@@ -162,7 +168,7 @@ def main(argv=None):
                                 q_current = sender.measured_state[:14].astype(float).copy()
                                 reachable.reset(q_current)
                                 grippers = sender.measured_state[14:].astype(float).copy()
-                                mappers = [DownwardPoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
+                                mappers = [PoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
                                     for side, pose, anchor in zip(('left', 'right'), press_poses, ik.forward_kinematics(q_current))]
                                 last_control_time = start
                                 ar_active = True
@@ -175,7 +181,7 @@ def main(argv=None):
                             reachable.reset(q_current)
                             grippers = sender.measured_state[14:].astype(float).copy()
                             anchors = ik.forward_kinematics(q_current)
-                            mappers = [DownwardPoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
+                            mappers = [PoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
                                 for side, pose, anchor in zip(("left", "right"),
                                     press_poses, anchors)]
                             last_control_time = start
@@ -199,7 +205,7 @@ def main(argv=None):
                         if ar_active and episodes.available and episodes.status['state'] == 'RECORDING':
                             episodes.button('b')
                         ar_active = False
-                        print("Isaac/reset updated or R requested; HOLD. Reattach both wrists with A.")
+                        print("Isaac/reset updated or R requested; HOLD. Reattach both grasp tips with A.")
                     else:
                         print("Receiver connected/restarted or recenter requested; calibrating at measured robot pose.")
                 bgr = video.receive() if video else None
@@ -227,7 +233,7 @@ def main(argv=None):
                     if ar_mode and not tv.placed:
                         state = "AR PLACE WORLD / A TO LOCK"
                 elif mappers is None:
-                    state = "AR LINK WRISTS / A TO RECORD" if ar_mode else "CALIBRATING"
+                    state = "AR LINK TIPS / A TO RECORD" if ar_mode else "CALIBRATING"
                     # Stop an in-flight old IK goal immediately while the new
                     # neutral pose is being collected; keep the gripper state.
                     sender.send(np.concatenate((sender.measured_state[:14], grippers)), hold_arms=True)
@@ -235,7 +241,7 @@ def main(argv=None):
                         q_current = sender.measured_state[:14].astype(float).copy()
                         reachable.reset(q_current)
                         grippers = sender.measured_state[14:].astype(float).copy()
-                        mappers = [DownwardPoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
+                        mappers = [PoseMapper(pose.copy(), anchor, not args.no_filter, side=side)
                             for side, pose, anchor in zip(('left', 'right'),
                                 (data.left_wrist_pose, data.right_wrist_pose), ik.forward_kinematics(q_current))]
                         last_control_time = start
@@ -249,7 +255,7 @@ def main(argv=None):
                         samples[0].append(data.left_wrist_pose.copy())
                         samples[1].append(data.right_wrist_pose.copy())
                         if len(samples[0]) >= cfg.CALIBRATION_SAMPLES:
-                            if not all(samples_are_still(s, check_rotation=False) for s in samples):
+                            if not all(samples_are_still(s, check_rotation=not args.position_only) for s in samples):
                                 print("Calibration motion detected; hold still and retry.")
                                 samples = [[], []]
                             else:
@@ -259,7 +265,7 @@ def main(argv=None):
                                 reachable.reset(q_current)
                                 grippers = sender.measured_state[14:].astype(float).copy()
                                 anchors = ik.forward_kinematics(q_current)
-                                mappers = [DownwardPoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
+                                mappers = [PoseMapper(average_pose(s), anchor, not args.no_filter, side=side)
                                            for side, s, anchor in zip(("left", "right"), samples, anchors)]
                                 last_control_time = start
                                 print("Calibration complete. HOME HOLD; A starts recording and teleoperation."
@@ -273,7 +279,7 @@ def main(argv=None):
                     # Never resume after loss/reset just because fresh poses
                     # returned. A new explicit attachment is required.
                     sender.send(sender.measured_state, hold_arms=True)
-                    state = "AR LINK WRISTS / A TO START" if episodes.status is None else "AR PAUSED / B TO REVIEW"
+                    state = "AR LINK TIPS / A TO START" if episodes.status is None else "AR PAUSED / B TO REVIEW"
                 elif serial != last_serial:
                     # Consume the newest event once. No repeated filtering/IK
                     # or action keepalives for a controller event that stopped.
@@ -288,10 +294,10 @@ def main(argv=None):
                     table_limited = [False, False]
                     table_ready = True
                     qp_feedback = None
-                    if episodes.available and episodes.status["state"] == "RECORDING":
+                    if assist_cfg.ENABLED and episodes.available and episodes.status["state"] == "RECORDING":
                         from robot.table_approach import limit_targets
                         targets, table_limited, table_ready = limit_targets(
-                            targets, sender.table_feedback, sender.boot_time, start)
+                            targets, sender.table_feedback, sender.boot_time, start, tcp_only=True)
                         if table_ready:
                             qp_feedback = sender.table_feedback
                         else:
@@ -365,13 +371,20 @@ def main(argv=None):
                              "loop_p95_ms": float(np.percentile(loop_times, 95)) if loop_times else None,
                              "loop_max_ms": float(np.max(loop_times)) if loop_times else None,
                              "input_age_p95_ms": float(np.percentile(input_ages, 95)) if input_ages else None}
+                    if mappers:
+                        stats['translation_mapping'] = {
+                            'signs': list(cfg.TRANSLATION_AXIS_SIGNS),
+                            'controller_delta_robot_m': [((pose[:3,3]-mapper.start[:3,3]).tolist())
+                                for mapper,pose in zip(mappers,(data.left_wrist_pose,data.right_wrist_pose))],
+                            'mapped_delta_m': [mapper.raw_delta.tolist() for mapper in mappers],
+                            'filtered_delta_m': [mapper.delta.tolist() for mapper in mappers]}
                     if ar_mode:
                         stats['ar_start'] = {'current': ar_gate, 'last_press': last_ar_start}
                     timing_file.write(json.dumps(stats) + "\n")
                     info = ""
                     if mappers:
                         info = (f" Lxyz={mappers[0].delta.round(3)} Rxyz={mappers[1].delta.round(3)}"
-                                " orientation=DOWN_FIXED")
+                                " orientation=CONTROLLER tcp=GRIPPER_MIDDLE hand_map=R_TO_L/L_TO_R")
                         if state.startswith("ACTIVE") and reach_result:
                             info += (f" step={reach_result.mode} fraction={reach_result.fraction:.3f}"
                                      f" remainingL/R_mm={np.round(reach_result.remaining_mm, 1)}"

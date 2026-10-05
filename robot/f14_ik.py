@@ -16,14 +16,25 @@ except ModuleNotFoundError:
 
 
 class F14IK:
-    def __init__(self, urdf_path):
+    def __init__(self, urdf_path, *, ee_offset=None):
         self.model = pin.buildModelFromUrdf(str(urdf_path))
-        self.data = self.model.createData()
         self.left_ee_frame = self.model.getFrameId("left_dof7_link")
         self.right_ee_frame = self.model.getFrameId("right_dof7_link")
         for frame in (self.left_ee_frame, self.right_ee_frame):
             if frame >= len(self.model.frames):
                 raise ValueError("F14 end-effector frame not found")
+        self.ee_offset = np.zeros(3) if ee_offset is None else np.asarray(ee_offset,float).copy()
+        if self.ee_offset.shape!=(3,) or not np.isfinite(self.ee_offset).all():
+            raise ValueError('Expected finite TCP offset')
+        if ee_offset is not None:
+            tcp_frames=[]
+            for side,frame_id in zip(('left','right'),(self.left_ee_frame,self.right_ee_frame)):
+                frame=self.model.frames[frame_id]
+                tcp_frames.append(self.model.addFrame(pin.Frame(f'{side}_grasp_tip',
+                    frame.parentJoint if hasattr(frame,'parentJoint') else frame.parent,frame_id,
+                    frame.placement*pin.SE3(np.eye(3),self.ee_offset),pin.FrameType.OP_FRAME)))
+            self.left_ee_frame,self.right_ee_frame=tcp_frames
+        self.data = self.model.createData()
         joints = []
         for name in LEFT_JOINT_NAMES + RIGHT_JOINT_NAMES:
             if not self.model.existJointName(name):

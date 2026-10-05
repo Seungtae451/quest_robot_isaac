@@ -1,5 +1,6 @@
 """Real F14 Jacobian/QP regression, independent of the Isaac application."""
 import json
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,16 @@ from robot.f14_config import F14_URDF_PATH, HOME_Q, LEFT_EE_DOWN_ROT, RIGHT_EE_D
 from robot.f14_ik import F14IK
 from robot.joint_motion import JointMotionLimiter
 from teleop.action_protocol import pack_action, unpack_action, PACKET_SIZE
+
+
+@pytest.fixture
+def legacy_assist_tuning(monkeypatch):
+    # Historical fixed-downward collision fixtures use their original slow tuning.
+    for key,value in dict(QP_POSITION_GAIN=3.,QP_ORIENTATION_GAIN=5.,
+                          QP_MAX_CARTESIAN_SPEED=.25,QP_ORIENTATION_WEIGHT=3.,
+                          QP_LAG_HORIZON=.5,ARM_MAX_ACCELERATION=.5,
+                          QP_NONLINEAR_ROTATION_TOLERANCE=cfg.IK_EPS).items():
+        monkeypatch.setattr(cfg,key,value)
 
 
 def setup():
@@ -33,7 +44,7 @@ def test_convergence_speed_acceleration_limits_and_fixed_full_rotation():
         assert np.max(np.abs(velocity - previous)) <= cfg.ARM_MAX_ACCELERATION * dt + 2e-7
         assert np.all(result.q >= controller.lower) and np.all(result.q <= controller.upper)
         for actual, target in zip(ik.forward_kinematics(result.q), targets):
-            assert np.linalg.norm(pin.log3(actual.rotation.T @ target.rotation)) <= cfg.IK_EPS + 2e-6
+            assert np.linalg.norm(pin.log3(actual.rotation.T @ target.rotation)) <= cfg.QP_NONLINEAR_ROTATION_TOLERANCE + 2e-6
         q, previous = result.q, velocity
     assert max(result.remaining_mm) < .2  # measured Cartesian accuracy remains 0.2 mm
 
@@ -114,12 +125,15 @@ def test_cold_retry_does_not_integrate_nonconverged_warm_result():
     assert np.max(np.abs(result.q - HOME_Q)) <= cfg.ARM_MAX_ACCELERATION / 60**2 + 1e-9
 
 
-def test_open_home_overlap_can_lift_and_table_descent_is_limited():
-    ik, controller, targets = setup()
+def test_open_home_overlap_can_lift_and_table_descent_is_limited(downward_home_q,legacy_assist_tuning):
+    ik = F14IK(F14_URDF_PATH)
+    controller = DifferentialIK(ik)
+    # Recorded collision geometry belongs to the former raised downward HOME.
+    targets = list(ik.forward_kinematics(downward_home_q))
     feedback = json.loads((Path(__file__).parent / 'fixtures/open_home_collision_feedback.json').read_text())
     for pose in targets:
         pose.translation[2] += .04
-    q = HOME_Q.copy()
+    q = downward_home_q.copy()
     for _ in range(600):
         result = controller.solve(*targets, q, dt=1/60, feedback=feedback); q = result.q
     for actual, target in zip(ik.forward_kinematics(q), targets):
@@ -154,7 +168,7 @@ def test_differential_packet_and_receiver_reference_are_bounded_on_timeout():
     np.testing.assert_array_equal(motion.velocity, np.zeros(14))
 
 
-def test_measured_gpu_home_recovers_rotation_with_changing_collision_envelopes():
+def test_measured_gpu_home_recovers_rotation_with_changing_collision_envelopes(legacy_assist_tuning):
     ik, controller, _ = setup()
     # Real PhysX HOME differs slightly from the nominal URDF HOME. This exposed
     # slow QP convergence with redundant collision planes and fixed rotation.

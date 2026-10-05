@@ -1,4 +1,4 @@
-"""Relative XYZ control with fixed downward grippers, plus legacy diagnostics.
+"""Relative XYZ grasp-tip control, plus legacy wrist/rotation diagnostics.
 
 No new axis swaps, translation clamps, or angle clamps occur here. Calibration
 uses an SO(3) projection of the rotation sum; filtering follows the SO(3)
@@ -9,7 +9,23 @@ import pinocchio as pin
 
 from config import teleop_config as cfg
 from robot.f14_config import LEFT_EE_DOWN_ROT, RIGHT_EE_DOWN_ROT
+from robot.tool_frame import controller_ee_basis
 from teleop.input_timing import timed_filter_alpha
+from types import SimpleNamespace
+
+
+def front_facing_controls(data):
+    """Reorder hands into ROBOT L/R; do not mirror any world coordinate axis.
+
+    Physical A/B/X button handling stays in the adapter, before this mapping.
+    """
+    result=vars(data).copy()
+    result['left_wrist_pose']=data.right_wrist_pose
+    result['right_wrist_pose']=data.left_wrist_pose
+    for key in ('triggerValue','squeezeValue'):
+        result[f'left_ctrl_{key}']=getattr(data,f'right_ctrl_{key}')
+        result[f'right_ctrl_{key}']=getattr(data,f'left_ctrl_{key}')
+    return SimpleNamespace(**result)
 
 
 def valid_pose(pose) -> bool:
@@ -41,6 +57,48 @@ def samples_are_still(samples, *, check_rotation=True) -> bool:
     return all(np.linalg.norm(p[:3, 3] - mean[:3, 3]) <= cfg.CALIBRATION_POSITION_TOLERANCE
                and (not check_rotation or np.linalg.norm(pin.log3(mean[:3, :3].T @ p[:3, :3])) <= cfg.CALIBRATION_ROTATION_TOLERANCE)
                for p in samples)
+
+
+class TranslationPoseMapper:
+    """XYZ displacement only. Target rotation is unused by position-only IK."""
+    def __init__(self, controller_start, robot_anchor, use_filter=True, *, side):
+        if side not in ('left','right') or not valid_pose(controller_start):
+            raise ValueError('Invalid arm or neutral controller pose')
+        self.start=controller_start.copy()
+        self.anchor=robot_anchor.copy()
+        self.alpha_p=cfg.POSITION_FILTER_ALPHA if use_filter else 1.
+        self.delta=np.zeros(3)
+        self.raw_delta=np.zeros(3)
+
+    def target(self,current,dt=None):
+        if not valid_pose(current):
+            raise ValueError('Invalid current controller pose')
+        self.raw_delta=(current[:3,3]-self.start[:3,3])*np.asarray(cfg.TRANSLATION_AXIS_SIGNS)
+        delta=np.where(np.abs(self.raw_delta)<cfg.POSITION_DEADBAND,0.,self.raw_delta)
+        alpha=self.alpha_p if dt is None else timed_filter_alpha(self.alpha_p,dt,cfg.FILTER_REFERENCE_HZ)
+        self.delta+=alpha*(delta-self.delta)
+        target=self.anchor.copy()
+        target.translation=self.anchor.translation+self.delta
+        return target
+
+
+class WorldPoseMapper(TranslationPoseMapper):
+    """Follow world XYZ and world rotation deltas, without an A-press jump."""
+    def __init__(self, controller_start, robot_anchor, use_filter=True, *, side):
+        super().__init__(controller_start, robot_anchor, use_filter, side=side)
+        self.alpha_r=cfg.ROTATION_FILTER_ALPHA if use_filter else 1.
+        self.world_rotation=np.eye(3)
+        self.controller_basis=controller_ee_basis(side)
+
+    def target(self, current, dt=None):
+        target=super().target(current, dt)
+        mapped_current=current[:3,:3]@self.controller_basis
+        mapped_start=self.start[:3,:3]@self.controller_basis
+        relative=project_so3(mapped_current@mapped_start.T)
+        alpha=self.alpha_r if dt is None else timed_filter_alpha(self.alpha_r,dt,cfg.FILTER_REFERENCE_HZ)
+        self.world_rotation=project_so3(self.world_rotation@pin.exp3(alpha*pin.log3(self.world_rotation.T@relative)))
+        target.rotation=self.world_rotation@self.anchor.rotation
+        return target
 
 
 class DownwardPoseMapper:

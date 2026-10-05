@@ -14,10 +14,11 @@ CAMERA_FPS = 30.0
 # Mapping gains are deliberately fixed at one. Filters affect transient response,
 # not steady-state gain. Unreachable targets are rejected by IK, never rescaled.
 POSITION_SCALE = 1.0
+TRANSLATION_AXIS_SIGNS = (1.0, 1.0, 1.0)  # AR inverse-world transform already preserves displayed motion
 ORIENTATION_SCALE = 1.0  # legacy offline mapping diagnostics only
-POSITION_DEADBAND = 0.005
-POSITION_FILTER_ALPHA = 0.2
-ROTATION_FILTER_ALPHA = 0.2  # legacy offline mapping diagnostics only
+POSITION_DEADBAND = 0.001
+POSITION_FILTER_ALPHA = 0.8
+ROTATION_FILTER_ALPHA = 0.8  # live world rotation smoothing
 GRIPPER_FILTER_ALPHA = 0.3
 CONTROLLER_TO_EE_ROT = ((1., 0., 0.), (0., 1., 0.), (0., 0., 1.))
 # Legacy wrist-axis diagnostics; live control ignores controller rotation.
@@ -53,21 +54,23 @@ IK_FOLLOW_BUDGET_MS = 12.0  # stop starting retries after this elapsed budget
 
 # Live Quest uses differential IK with two independent ProxQP problems.
 # The iterative IK options above remain for offline reachability/spawn checks.
-QP_POSITION_GAIN = 3.0  # s^-1, Cartesian error feedback
-QP_ORIENTATION_GAIN = 5.0  # s^-1, full fixed downward rotation feedback
-QP_MAX_CARTESIAN_SPEED = 0.25  # m/s (25 cm/s), before joint velocity constraints
+QP_POSITION_GAIN = 10.0  # s^-1, Cartesian error feedback
+QP_ORIENTATION_GAIN = 10.0  # s^-1, controller-relative rotation feedback
+QP_NONLINEAR_ROTATION_TOLERANCE = 0.002  # rad, transient linearization allowance (~0.11 deg)
+QP_ORIENTATION_WEIGHT = 1.0  # reduce prior 3x angular priority; keep full pose task
+QP_MAX_CARTESIAN_SPEED = 0.75  # m/s (75 cm/s), fast teleop reference
 QP_LIMIT_GAIN = 0.10  # rad/s, redundant joint-limit avoidance
 QP_REGULARIZATION = 1e-4  # positive definite objective, also near singularities
 QP_MAX_ITER = 100  # small 7-variable QPs; leave room for active-set changes
 QP_MAX_INNER_ITER = 50  # ProxQP's default 1500 is excessive for live control
 QP_COLD_RETRY_BUDGET_MS = 4.0  # start at most one cold retry per nonconverged arm
 QP_MAX_DT = 0.05  # never integrate a long pause in one step
-QP_LAG_HORIZON = 0.5  # seconds, predictive reference/measurement lag bound
+QP_LAG_HORIZON = 0.02  # seconds; solver also uses at least actual control dt
 
 # Both differential references and legacy destinations obey these limits.
 # are always enforced by the Isaac receiver, including with --no-filter.
-ARM_MAX_VELOCITY = 0.25  # rad/s (~14.3 deg/s)
-ARM_MAX_ACCELERATION = 0.50  # rad/s^2 (~28.6 deg/s^2)
+ARM_MAX_VELOCITY = 3.14  # rad/s (~180 deg/s)
+ARM_MAX_ACCELERATION = 10.0  # rad/s^2, fast bounded response
 ARM_MAX_TRACKING_ERROR = 0.05  # rad; brake if a drive cannot follow its reference
 
 # The canonical USD's finger drives are only ~2.3-2.8 N/m and cannot hold the
@@ -96,18 +99,17 @@ PANEL_GAP = 12
 
 # CameraCfg convention="world": camera +X looks forward and +Z is image up.
 # Offsets below are expressed in the PARENT LINK, not the global world frame.
-# Raise the body camera 10 cm, move forward to see over HOME grippers, and
-# aim +73 deg down at the nearer table. Only the sensor mount changes.
+# Restore the pre-table-move body camera: 85 cm high, 8 cm forward,
+# aimed 50 degrees down, with the original 18 mm focal length (51dba6f).
 BODY_CAMERA_OFFSET = (0.25, 0.0, 0.95)
-BODY_CAMERA_ROT = (0.8038568606, 0.0, 0.5948227868, 0.0)
-BODY_CAMERA_FOCAL_LENGTH = 16.0  # wider tabletop coverage; sensor size unchanged
+BODY_CAMERA_ROT = (0.8538568606, 0.0, 0.5948227868, 0.0)
+BODY_CAMERA_FOCAL_LENGTH = 18.0
 WRIST_CAMERA_FOCAL_LENGTH = 18.0
 CAMERA_HORIZONTAL_APERTURE = 24.0
 
 # URDF finger origins extend along wrist LOCAL -Y. Sliders use left -Z/right
 # +Z. Camera forward is local -Y, not robot/world +X. The image-up/mount axes
-# are left local +X and right local -X. With the new downward HOME these both
-# point toward world -X; retain the existing mirrored physical camera mounts.
+# are left local +X and right local -X, pointing up at the original HOME.
 # Quaternion columns map camera [forward, left, up] to these parent-link axes.
 # Tilt 25 degrees down in CAMERA coordinates to include the fingertips. The
 # quaternions are the above axis alignment multiplied by camera Ry(+25 deg).

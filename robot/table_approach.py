@@ -73,12 +73,11 @@ def limit_obstacle_path(start, end, parts, obstacles, velocity_bounds):
     return (start+fraction*delta,True) if limited else (original_end,False)
 
 
-def limit_targets(targets, feedback, boot_time, now):
+def limit_targets(targets, feedback, boot_time, now, *, tcp_only=False):
     """Return copied pose targets, per-arm limit flags and feedback availability.
 
-    The measured collider envelope is expressed about wrist link 7 with the
-    fixed downward orientation used by teleoperation. Limit table descent and
-    truncate XYZ paths crossing box solids. Rotation and grippers are intact.
+    Use the measured envelope about the grasp tip when TCP feedback is enabled.
+    Legacy wrist feedback remains available to offline diagnostics.
     """
     result=[target.copy() for target in targets]
     limited=[False,False]
@@ -100,8 +99,10 @@ def limit_targets(targets, feedback, boot_time, now):
         if table.shape!=(4,) or len(arms)!=2 or not np.isfinite([*table,surface]).all():
             raise ValueError('Invalid table geometry')
         for index,(target,arm) in enumerate(zip(result,arms)):
+            if tcp_only and ('tcp_position' not in arm or 'part_local_points' not in arm):
+                raise ValueError('Restart Isaac for current grasp-tip collision feedback')
             offset=np.asarray(arm['offset_bounds'],float)
-            wrist=np.asarray(arm['wrist_position'],float)
+            wrist=np.asarray(arm.get('tcp_position',arm['wrist_position']),float)
             closing=float(arm['closing_speed'])
             if offset.shape!=(2,3) or wrist.shape!=(3,) or not np.isfinite([*offset.ravel(),*wrist,closing]).all():
                 raise ValueError('Invalid wrist prediction')

@@ -24,6 +24,8 @@ def start_decision(attachment, *, fresh, receiver_ready, restarted, mapper_ready
     reasons = list(dict.fromkeys(reasons))
     return {'allowed': not reasons, 'reasons': reasons,
             'distances_m': attachment['distances_m'], 'radius_m': attachment['radius_m'],
+            'axis_errors_deg': attachment.get('axis_errors_deg'),
+            'axis_tolerance_deg': attachment.get('axis_tolerance_deg'),
             'home': episode.get('start_readiness') if episode else None}
 
 

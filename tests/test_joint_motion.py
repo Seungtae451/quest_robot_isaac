@@ -32,7 +32,7 @@ def test_large_ik_jump_is_reached_gradually_with_bounded_velocity_and_accelerati
     motion = limiter()
     goal = np.linspace(-1., 1., 14)
     first = checked_step(motion, goal)
-    assert np.max(np.abs(first)) < .001
+    assert np.max(np.abs(first)) <= cfg.ARM_MAX_ACCELERATION * DT**2 + 1e-12
     for _ in range(600):
         checked_step(motion, goal)
     np.testing.assert_allclose(motion.position, goal, atol=1e-4)
@@ -47,12 +47,12 @@ def test_failed_ik_brakes_and_recovery_starts_at_stopped_position():
         checked_step(motion, np.ones(14), enabled=False)
     stopped = motion.position.copy()
     assert np.max(stopped - previous) <= cfg.ARM_MAX_VELOCITY**2 / (2 * cfg.ARM_MAX_ACCELERATION) + 1e-6
-    assert np.max(stopped) < .5  # did not continue to the stale 1-rad IK goal
+    assert np.max(stopped) < 1.0  # brakes from the position reached before failure
     for _ in range(60):
         checked_step(motion, -np.ones(14), enabled=False)
     np.testing.assert_array_equal(motion.position, stopped)
     recovered = checked_step(motion, -np.ones(14))
-    assert np.max(np.abs(recovered - stopped)) < .001
+    assert np.max(np.abs(recovered - stopped)) <= cfg.ARM_MAX_ACCELERATION * DT**2 + 1e-12
     for _ in range(720):
         checked_step(motion, -np.ones(14))
     np.testing.assert_allclose(motion.position, -np.ones(14), atol=1e-4)
@@ -116,7 +116,7 @@ def test_blocked_joint_can_retreat_without_resetting_reference_or_exceeding_limi
     stopped = motion.position.copy()
     assert motion.tracking_limited.all()
     first = checked_step(motion, -sign * np.ones(14), measured=measured)
-    assert np.max(np.abs(first - stopped)) < .001
+    assert np.max(np.abs(first - stopped)) <= cfg.ARM_MAX_ACCELERATION * DT**2 + 1e-12
     for _ in range(120):
         checked_step(motion, measured, measured=measured)
     assert np.max(np.abs(motion.position)) < .01

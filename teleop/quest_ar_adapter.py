@@ -18,6 +18,8 @@ from teleop.ar_scene import SceneSubscriber
 from teleop.ar_world import rigid_matrix, controller_in_robot, attachment_distances
 from teleop.recording_buttons import RecordingButtons
 from teleop.xr_tls import certificate_paths
+from robot.tool_frame import control_position, rotation_wxyz, controller_alignment_errors
+from robot.f14_config import GRIPPER_CONTROL_OFFSET
 
 
 class ARInputState:
@@ -126,6 +128,12 @@ class QuestARInterface:
         if not manifest_path.is_file() or not (ar_config.ASSET_ROOT / 'vendor/three/build/three.module.js').is_file():
             raise FileNotFoundError('AR assets missing. Run scripts/export_quest_ar_assets.py as described in README_TELEOP.md')
         self.manifest = json.loads(manifest_path.read_text())
+        self.manifest['tcp_offset'] = GRIPPER_CONTROL_OFFSET.tolist()
+        self.manifest['attach_radius'] = ar_config.ATTACH_RADIUS
+        self.manifest['axis_tolerance_deg'] = ar_config.ATTACH_AXIS_TOLERANCE_DEG
+        self.manifest['axis_length'] = ar_config.AXIS_LENGTH
+        self.manifest['placement_height'] = ar_config.PLACEMENT_HEIGHT
+        self.manifest['placement_yaw_deg'] = ar_config.PLACEMENT_YAW_DEG
         self.port, self.scene_endpoint = port, scene_endpoint
         self.cert, self.key = certificate_paths()
         self.lock = threading.RLock()
@@ -172,7 +180,7 @@ class QuestARInterface:
 
     def attachment_status(self, poses, boot_time):
         with self.lock:
-            reasons, distances = [], None
+            reasons, distances, axis_errors = [], None, None
             if not self.placed:
                 reasons.append('PLACE_WORLD')
             if poses is None:
@@ -184,12 +192,16 @@ class QuestARInterface:
             elif not 0 <= time.monotonic() - self.scene['timestamp'] <= ar_config.SCENE_TIMEOUT:
                 reasons.append('SCENE_STALE')
             if not reasons:
-                wrists = [self.scene['links'][f'{side}_dof7_link'][:3] for side in ('left', 'right')]
-                distances = attachment_distances(poses, wrists).tolist()
+                tips = [control_position(self.scene['links'][f'{side}_dof7_link']) for side in ('left', 'right')]
+                # poses are reordered into robot arm order by the sender.
+                distances = attachment_distances(poses, tips).tolist()
                 for side, distance in zip(('LEFT', 'RIGHT'), distances):
                     if distance > ar_config.ATTACH_RADIUS + 1e-9:
-                        reasons.append(side + '_OUTSIDE_5CM')
-            return {'reasons': reasons, 'distances_m': distances, 'radius_m': ar_config.ATTACH_RADIUS}
+                        reasons.append(side + '_OUTSIDE_4CM')
+                axis_errors = [controller_alignment_errors(pose[:3,:3], rotation_wxyz(self.scene['links'][f'{side}_dof7_link'][3:]), side).tolist()
+                               for pose,side in zip(poses,('left','right'))]
+            return {'reasons': reasons, 'distances_m': distances, 'radius_m': ar_config.ATTACH_RADIUS,
+                    'axis_errors_deg':axis_errors,'axis_tolerance_deg':ar_config.ATTACH_AXIS_TOLERANCE_DEG}
 
     def recording_button_events(self, with_poses=False):
         with self.lock:
@@ -213,7 +225,7 @@ class QuestARInterface:
 
     def print_url(self, host_ip):
         print(f'Quest AR URL: https://{host_ip}:{self.port}/')
-        print('Enter AR -> A places world -> both grips within 5 cm of dof7 -> A starts.')
+        print('Enter AR -> A places world -> opposite-hand grips within 4 cm of gripper middles (orientation unrestricted) -> A starts.')
         print('Fixed XR world, 1 metre = 1 metre; head motion never remaps arm input.')
 
     def _run(self):

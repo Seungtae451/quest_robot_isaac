@@ -1,5 +1,6 @@
 """Actual IK spawn points, grasp-frame offsets, cache validity and visibility."""
 import numpy as np
+import pytest
 
 from config import tabletop_config as cfg
 from config import teleop_config
@@ -7,6 +8,32 @@ from robot.f14_config import F14_URDF_PATH, HOME_Q, LEFT_EE_DOWN_ROT, RIGHT_EE_D
 from robot.f14_ik import F14IK
 from robot.spawn_workspace import ensure_spawn_pool, workspace_signature, grasp_wrist_position, cube_is_in_camera
 from simulation.tabletop import sample_cube_poses, table_surface_height
+
+
+@pytest.fixture(scope="module", autouse=True)
+def legacy_downward_workspace(tmp_path_factory, downward_home_q):
+    """Exercise the optional grid with its original posture, table and camera.
+
+    Live collection now uses the restored continuous spawn regions; it must
+    not depend on a fixed-downward grid or overwrite that grid during tests.
+    """
+    from robot import f14_config, spawn_workspace
+    from scripts import build_ik_spawn_pool as builder
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(f14_config, "HOME_Q", downward_home_q)
+        m.setattr(builder, "HOME_Q", downward_home_q)
+        m.setattr(cfg, "TABLE_CENTER", (.45, 0., .28))
+        m.setattr(cfg, "BOX_CENTER_XY", (.45, 0.))
+        m.setattr(cfg, "CUBE_SPAWN_REQUIRE_IK", True)
+        m.setattr(teleop_config, "BODY_CAMERA_OFFSET", (.25, 0., .95))
+        m.setattr(teleop_config, "BODY_CAMERA_ROT", (.8038568606, 0., .5948227868, 0.))
+        m.setattr(teleop_config, "BODY_CAMERA_FOCAL_LENGTH", 16.)
+        cache = tmp_path_factory.mktemp("downward_workspace") / "pool.json"
+        m.setattr(spawn_workspace, "CACHE_PATH", cache)
+        m.setattr(spawn_workspace, "_loaded", None)
+        m.setattr(builder, "CACHE_PATH", cache)
+        builder.main()
+        yield
 
 
 def test_spawn_has_no_unverified_position_jitter():

@@ -1,3 +1,4 @@
+from robot.tool_frame import controller_ee_basis
 """World mapping, grip attachment, XR reset and button isolation regressions."""
 import copy
 from contextlib import closing
@@ -13,6 +14,7 @@ from teleop.quest_ar_adapter import ARInputState, QuestARInterface
 from teleop.ar_scene import ScenePublisher, SceneSubscriber, validate_scene
 from robot.f14_config import HOME_Q, F14_URDF_PATH
 from robot.f14_ik import F14IK
+from robot.f14_config import GRIPPER_CONTROL_OFFSET
 from teleop.xr_pose import DownwardPoseMapper
 from teleop.ar_start import start_decision, start_message
 
@@ -180,7 +182,11 @@ def test_attachment_requires_current_sim_boot_and_scene_timestamp():
     interface.lock=threading.RLock(); interface.input=ARInputState('test')
     interface.input.update(packet(), time.monotonic())
     interface.scene=scene(boot=42.)
+    for pose in interface.scene['links'].values():
+        pose[:3]=(np.array(pose[:3])-GRIPPER_CONTROL_OFFSET).tolist()
     poses=np.stack((interface.input.data.left_wrist_pose,interface.input.data.right_wrist_pose))
+    for i,side in enumerate(('left','right')):
+        poses[i,:3,:3]=controller_ee_basis(side).T
     assert interface.attachment(poses,42.)[0]
     assert not interface.attachment(poses,41.)[0]
     interface.scene['timestamp']-=1
@@ -193,19 +199,25 @@ def test_start_rejection_distinguishes_distance_from_home_and_keeps_press_pose()
     interface.lock = threading.RLock(); interface.input = ARInputState('test')
     now = time.monotonic() - .1
     interface.input.update(packet(0), now)
-    interface.input.update(packet(1, buttons=('a',), offset=.049), now+.01)
+    interface.input.update(packet(1, buttons=('a',), offset=.009), now+.01)
     interface.input.update(packet(2, offset=.08), now+.02)
     press = interface.recording_button_events(with_poses=True)[0][1]
     interface.scene = scene(boot=42.)
+    for pose in interface.scene['links'].values():
+        pose[:3]=(np.array(pose[:3])-GRIPPER_CONTROL_OFFSET).tolist()
     context = dict(fresh=True, receiver_ready=True, restarted=False,
                    mapper_ready=True, episode_available=True, command_busy=False)
     ready = {'state':'READY', 'start_allowed':True}
+    for i,side in enumerate(('left','right')):
+        press[i,:3,:3]=controller_ee_basis(side).T
     at_press = start_decision(interface.attachment_status(press,42.), episode=ready, **context)
     assert at_press['allowed']
-    np.testing.assert_allclose(at_press['distances_m'], [.049,.049], atol=1e-12)
+    np.testing.assert_allclose(at_press['distances_m'], [.009,.009], atol=1e-12)
     current = np.stack((interface.input.data.left_wrist_pose, interface.input.data.right_wrist_pose))
+    for i,side in enumerate(('left','right')):
+        current[i,:3,:3]=controller_ee_basis(side).T
     outside = start_decision(interface.attachment_status(current,42.), episode=ready, **context)
-    assert outside['reasons'] == ['LEFT_OUTSIDE_5CM','RIGHT_OUTSIDE_5CM']
+    assert outside['reasons'] == ['LEFT_OUTSIDE_4CM','RIGHT_OUTSIDE_4CM']
     assert 'L=8.00cm R=8.00cm' in start_message(outside)
     blocked = {'state':'READY','start_allowed':False,
                'start_readiness':{'reasons':['HOME_JOINT_ERROR']}}

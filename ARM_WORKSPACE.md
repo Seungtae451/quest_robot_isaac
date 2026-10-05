@@ -1,5 +1,21 @@
 # scikit-robot으로 F14 가동범위 보기
 
+현재 **자유 방향·그리퍼 끝 TCP** 기준 이미지는 다음 명령으로 생성합니다.
+원래 낮은 HOME과 현재 테이블·상자·큐브 생성 영역을 함께 표시하며, 양팔 각각
+16,384개 관절 한계 내 자세를 scikit-robot FK로 계산합니다. 3D 및 XY/YZ/XZ
+투영도이며, 평면별 특정 높이의 IK 단면은 아닙니다. 충돌·경로·실시간 IK
+추종 여부는 검증하지 않습니다.
+
+```bash
+~/stkim_ws/.venv/bin/python scripts/visualize_current_f14_workspace.py
+```
+
+이미지: `outputs/arm_workspace/current_f14/workspace.png`.
+관절 표본·손끝 위치는 같은 폴더의 `samples.npz`, 설정·범위는 `summary.json`에
+저장합니다. 주황색은 로봇 왼팔, 파란색은 오른팔, 별은 HOME 손끝입니다.
+
+## 이전 손목 원점·수직 자세 비교 도구
+
 설치된 **scikit-robot 0.3.39** 환경은 `~/stkim_ws/.venv`입니다. Isaac을 실행할
 필요 없이 현재 rev 2.0.1 URDF, 관절 한계, HOME으로 계산합니다. 로봇 명령이나
 기존 녹화 데이터는 변경하지 않습니다.

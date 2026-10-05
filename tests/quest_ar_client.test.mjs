@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {ButtonEdges,worldMatrix,floorPoint,distanceInRobot,readController,startGateText} from '../web/quest_ar/core.mjs';
+import {ButtonEdges,worldMatrix,floorPoint,distanceInRobot,readController,startGateText,graspTip,axisErrorsInRobot} from '../web/quest_ar/core.mjs';
 import {GLTFLoader} from '../outputs/quest_ar/assets/vendor/three/examples/jsm/loaders/GLTFLoader.js';
 import {Matrix4,Vector3} from '../outputs/quest_ar/assets/vendor/three/build/three.module.js';
 
@@ -14,6 +14,7 @@ right.state.aButton=true; assert.deepEqual(edges.update(left,right,true),['a']);
 assert.deepEqual(edges.update(left,right,true),[]);
 edges.update(left,right,false); assert.deepEqual(edges.update(left,right,true),[]);
 
+assert.deepEqual(graspTip([.4,.18,.57,1,0,0,0],[0,-.235,-.0225]),[.4,-.05499999999999999,.5475]);
 const world=new Matrix4().fromArray(worldMatrix([1,0,-.5],.7));
 const pose=new Matrix4().makeTranslation(.4,.18,.57).premultiply(world);
 assert.ok(distanceInRobot(pose.elements,world.clone().invert().elements,[.4,.18,.57])<1e-12);
@@ -24,7 +25,7 @@ const controller=readController(source,{getPose:()=>({transform:{matrix:pose.ele
 assert.equal(controller.state.aButton,true);
 assert.deepEqual(controller.axes,[.1,-.2]);
 assert.equal(startGateText({allowed:false,reasons:['LEFT_OUTSIDE_5CM','RIGHT_OUTSIDE_5CM']}),
-             '왼손 추적점 5cm 밖 · 오른손 추적점 5cm 밖');
+             '오른손→로봇 왼팔 끝 5cm 밖 · 왼손→로봇 오른팔 끝 5cm 밖');
 assert.equal(startGateText({allowed:false,reasons:['HOME_JOINT_ERROR']}),'초기 관절 위치 오차');
 assert.match(startGateText({allowed:true,reasons:[]}),/연결 준비 완료/);
 
@@ -78,3 +79,14 @@ for (const visual of base.children) {
   assert.deepEqual(visual.getWorldPosition(new Vector3()).toArray(),[.2,.3,.4]);
 }
 console.log(`Quest AR client passed: ${manifest.links.length} links, ${meshes.size} visuals, ${faces} source triangles EXACTLY preserved; button/mapping checks passed.`);
+
+// Crossed-hand directed controller X/Y -> EE X/Z, in a raised/rotated world.
+const placedWorld=new Matrix4().fromArray(worldMatrix([1,.8,-.5],Math.PI));
+for (const side of ['left','right']) {
+  const sign=side==='left'?1:-1;
+  const controller=new Matrix4().set(0,0,-sign,0,sign,0,0,0,0,-1,0,0,0,0,0,1).transpose();
+  controller.premultiply(placedWorld);
+  const errors=axisErrorsInRobot(controller.elements,placedWorld.clone().invert().elements,[0,0,0,1,0,0,0],side);
+  assert.ok(Math.max(...errors)<1e-5);
+}
+assert.equal(placedWorld.elements[13],.8);

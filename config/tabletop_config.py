@@ -1,7 +1,8 @@
 """Tabletop geometry in robot/world axes: +X forward, +Y left, +Z up."""
 
-# Move 10 cm toward the body; preserve surface z = 0.30 m.
-TABLE_CENTER = (0.45, 0.0, 0.28)
+# Original table location before the 10 cm move toward the body (51dba6f).
+# Preserve surface z = 0.30 m and the same dimensions.
+TABLE_CENTER = (0.55, 0.0, 0.28)
 TABLE_SIZE = (0.60, 0.80, 0.04)
 TABLE_COLOR = (0.45, 0.30, 0.18)
 
@@ -27,9 +28,10 @@ CUBE_DROP_GAP = 0.004
 # Reserve the central strip across the full table length.
 BOX_SPAWN_CLEARANCE = 0.02
 
-# Spawn only at independently verified IK locations. The cache is rebuilt
-# before Isaac starts whenever URDF/HOME/table/camera/IK settings change.
-CUBE_SPAWN_REQUIRE_IK = True
+# Restore the original continuous XY/yaw sampling over the regions above.
+# The later fixed-downward IK grid is not used by this free-orientation setup.
+# Offline grid settings below remain available for explicit reachability work.
+CUBE_SPAWN_REQUIRE_IK = False
 IK_SPAWN_GRID_STEP = 0.015  # exact verified XY locations; no unchecked jitter
 IK_SPAWN_PATH_STEP = 0.015  # Cartesian waypoint spacing for continuity checks
 IK_SPAWN_MAX_JOINT_STEP = 0.20  # reject branch jumps (rad per waypoint)
